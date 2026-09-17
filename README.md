@@ -22,3 +22,7 @@ Monitoring 전체는 [infra-monitoring](https://github.com/321Team/infra-monitor
 ## 로컬 시험
 
 각 서비스 디렉터리에서 별도 Python 3.12 venv를 만들고 `python -m pip install -r requirements-test.txt`, `python -m pytest -q`를 실행한다. transaction-api fixture는 테스트용 localhost URL을 사용하고 DB readiness는 mock한다. 실제 DB·클러스터 연결이나 배포를 하지 않는다. 런타임 이미지에 test 의존성을 추가하지 않는다.
+
+## 정본에 따른 운영 결정
+
+[운영 정책](docs/POLICY.md)과 [정본 대응·책임 경계](docs/CANONICAL_POLICY.md)를 적용한다. Private/main을 유지하고, 이번 소스 이관은 로컬 검증 증적과 독립 검토 후 수동 병합으로 판단한다. Actions 활성화는 이관의 새 필수 AC가 아니며 CI 미실행은 NOT RUN으로 기록한다. 중앙 Delivery는 기존 infra-cicd 전용 Runner 경계를 유지한다.
