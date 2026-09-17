@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fds-engine
+  namespace: fds
+  labels:
+    app: fds-engine
+spec:
+  # E-K3S 시연에서 FDSDetectionBurst(이상거래 급증 알림)를 쓰려면 fds-engine 을 1 replica 로
+  # 둬야 한다(ClusterIP 스크레이프 라운드로빈 → increase() 오탐 회피). 단, 이 파일을
+  # kubectl apply 하면 클러스터와의 template drift 로 새 파드가 CrashLoop 할 수 있으므로
+  # **매니페스트를 바꾸지 말고** `kubectl -n fds scale deploy/fds-engine --replicas=1` 로 조정한다.
+  # (매니페스트↔클러스터 drift 는 v1.5 §3 "담당자 확인" 항목.)
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fds-engine
+  template:
+    metadata:
+      labels:
+        app: fds-engine
+    spec:
+      serviceAccountName: fds-engine
+      hostPID: false
+      hostIPC: false
+      hostNetwork: false
+      imagePullSecrets:
+        - name: harbor-pull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: fds-engine
+          image: 10.1.93.54/fds/fds-engine:v0.1.0
+          ports:
+            - containerPort: 8001
+              name: http
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # 외부 의존성 없음 → startupProbe 불필요, /health 하나로 충분
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8001
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8001
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 192Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
