@@ -1,11 +1,11 @@
 # 저장소 운영 정책
 
-상태: 정본 기준의 이관 정책에 2026-09-18 KST 사용자 승인 절차 변경을 반영했다. **독립 리뷰는 코드 병합에만 필수이며, 그 외 절차는 해당 Lead가 판단한다.** [변경결정 원문](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md)은 [정본 정책 PR #80](https://github.com/321Team/fds-project-baseline/pull/80)에서 추적한다. 문서 기록·PR 병합·정본 발행 상태는 구분한다.
+상태: 정본 기준의 이관 정책에 2026-09-18 KST 사용자 승인 절차 변경을 반영했다. **이 소스 저장소의 코드·혼합 PR은 독립 리뷰, 코드 외 절차는 해당 Lead가 판단한다. fds-project-evidence는 모든 PR에 독립 리뷰가 필요한 예외다.** [변경결정 원문](https://github.com/321Team/fds-project-baseline/blob/b2e4612cf2e417b10e7f145c5b1e5f58dbe1b948/governance/REVIEW_AUTHORITY_POLICY.md)은 [정본 정책 PR #80](https://github.com/321Team/fds-project-baseline/pull/80) 및 [증적 저장소 예외 PR #81](https://github.com/321Team/fds-project-baseline/pull/81)에서 추적한다. 문서 기록·PR 병합·정본 발행 상태는 구분한다.
 
 ## 1. 적용 근거와 권한 범위
 
 1. 요구사항·AC·아키텍처는 [발행 정본 v3.1.18](https://github.com/321Team/fds-project-baseline/blob/72599ae49342b0fb8dbd3d8ee60314afb9f907bb/baseline/FDS_Project_Implementation_Baseline_v3.1.18.md)과 이후 승인된 Decision/CR을 따른다. 승인 source는 `72599ae49342b0fb8dbd3d8ee60314afb9f907bb`다. 후보 문서, 미병합 PR, 구현 편의로 AC를 새로 확정하지 않는다.
-2. [정본 발행 정책 §1·§4·§5·§6](https://github.com/321Team/fds-project-baseline/blob/121fb744f0d816b3910a0bb07cf2bbe0d8883a16/governance/RELEASE_POLICY.md)의 Private·PR·수동 병합·검증 표기 원칙을 적용하되, 독립 검토 적용 범위는 위 2026-09-18 변경결정에 따라 코드 병합으로 한정한다. 이는 정본 문서 전용 Release/XLSX/ZIP 절차 전체를 소스 저장소에 강제한다는 뜻이 아니다.
+2. [정본 발행 정책 §1·§4·§5·§6](https://github.com/321Team/fds-project-baseline/blob/121fb744f0d816b3910a0bb07cf2bbe0d8883a16/governance/RELEASE_POLICY.md)의 Private·PR·수동 병합·검증 표기 원칙을 적용하되, 독립 검토 적용 범위는 위 2026-09-18 변경결정과 증적 저장소 예외를 따른다. 이는 정본 문서 전용 Release/XLSX/ZIP 절차 전체를 소스 저장소에 강제한다는 뜻이 아니다.
 3. [infra-cicd의 병합된 운영 기준](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/docs/governance.md)과 [중앙 Delivery 경계](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/README.md)는 해당 구현 책임과 승인 범위에서 준용한다. 저장소 분리로 Runner·배포·발급 권한을 확대하지 않는다.
 4. 저장소 이름, 아래 작업 브랜치 이름, snapshot-copy와 폴더 배치는 사용자 요청에 따른 이번 운영 세칙이다. 정본이 특정 GitHub 저장소 이름이나 이관 방식을 강제했다고 표시하지 않는다. 항목별 근거는 [정본 대응표](CANONICAL_POLICY.md)에 있다.
 
@@ -13,7 +13,7 @@
 
 - 요구사항/AC/Decision/CR/WBS/Release 정본은 `fds-project-baseline`, 수신된 실행 원본·독립 검토 증적은 `fds-project-evidence`에 둔다. 각 소스 저장소에는 구현·안전한 예제·Runbook과 증적 commit/path/SHA256 참조를 둔다.
 - 업무 Lead·Support는 책임 티켓의 기존 배정을 유지한다. 계정은 [Identity Map](https://github.com/321Team/fds-project-baseline/blob/121fb744f0d816b3910a0bb07cf2bbe0d8883a16/governance/GITHUB_IDENTITY_MAP.md)으로 연결한다. 이재환의 Application/Data/Monitoring/QA 역할과 정본 승인·리뷰·병합·발행 역할 제외는 구분한다. 정본 권한 제한을 모든 업무 소스 검토 금지로 확대하지 않는다.
-- 해당 Lead는 코드 외 문서·실행·증적 수용·AC 인수·Gate/티켓 종결을 결정한다. 본인이 수행한 업무도 필수 AC와 증적을 확인해 인수할 수 있다. Support의 별도 승인을 모든 단계의 필수 조건으로 두지 않는다.
+- 해당 Lead는 코드 외 문서·실행·증적 수용·AC 인수·Gate/티켓 종결을 결정한다. 본인이 수행한 업무도 필수 AC와 증적을 확인해 인수할 수 있다. Support의 별도 승인을 모든 단계의 필수 조건으로 두지 않는다. fds-project-evidence의 편입·정정 PR 심사는 문서·로그만 포함해도 독립 리뷰를 거친다.
 - 이번 이관은 코드/Workflow를 포함하며 작성자는 이권욱/GWONUK이다. 이하영/hayeounglee의 독립 검토 결과와 최신 HEAD를 확인한 뒤 이권욱이 수동 병합을 판단한다. 반대 작성 관계에는 이권욱이 독립 검토한다. AI 보조 점검과 작성자 자신의 검토는 타인의 독립 승인이 아니다.
 - CODEOWNERS는 GWONUK/hayeounglee 검토 경로를 기록한다. 실제 업무 Owner·승인자·계정 권한을 이 파일로 바꾸지 않으며, 파일 존재만으로 리뷰가 기술적으로 강제된다고 주장하지 않는다.
 
@@ -31,15 +31,15 @@
 
 ## 4. CI 결정과 보상 검증
 
-**현재 결정: 세 신규 저장소의 Actions 비활성 상태를 유지하고, 이번 이관은 소스 검증 증적과 독립 검토로 판단한다. Actions 활성화 자체를 이관의 새 필수 AC로 추가하지 않는다.**
+**2026-09-18 KST 사용자 Actions 실행 허용 후, main `c25ebd6b2307ee4f9c4801ca5f991302ae14eff0`의 [소스 검사 실행 35293311062](https://github.com/321Team/fds-msa/actions/runs/35293311062) success를 확인했다.** 비활성 유지라는 이전 안내를 종료한다. 이 결과는 해당 SHA/Run의 소스 검사 결과이며 이후 변경·Runtime 성공으로 승계하지 않는다. Actions/Runner/Secret 권한을 이 문서 수정으로 변경하지 않는다.
 
 - 정본 발행 정책 §6의 `Actions 미실행 → 로컬 결과만 기록, CI PASS로 오인 표시 금지`를 신규 소스에 적용한다. §2.1의 동일 스크립트 로컬 보상 방식도 참고하되 WBS 전용 검사를 앱/PKI에 요구하지 않는다. 보상 검증은 실제 검사 실패·누락을 숨기는 면제가 아니다.
-- 새 source-validation Workflow는 활성화될 경우를 위한 소스 검사 정의다. 기존 [infra-cicd 소스 검사](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/.github/workflows/source-validation.yml)처럼 GitHub-hosted/읽기 전용/제한 시간/고정 checkout/credential 비보존을 사용한다. 정본 내부 Delivery는 Self-hosted Runner이고, 이 소스 검사와 별개다.
+- source-validation Workflow는 소스 정적 검사를 수행한다. 기존 [infra-cicd 소스 검사](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/.github/workflows/source-validation.yml)처럼 GitHub-hosted/읽기 전용/제한 시간/고정 checkout/credential 비보존을 사용한다. 정본 내부 Delivery는 Self-hosted Runner이고, 이 소스 검사와 별개다.
 - 새 저장소 CI가 0건이면 `CI=NOT RUN`이다. 로컬 검증은 STATIC 또는 MOCK/UNIT로 기록한다. 과거 원본 CI 성공은 원본 SHA/Run/Attempt의 이력이며 새 저장소 CI 성공이 아니다.
 - 로컬 검증은 저장소 루트에서 `python tools/check_source.py`, `python tools/verify_migration.py`를 실행하고 원본/대상 해시·mode·문서 링크를 확인한다. source checker는 Git 추적 파일을 대상으로 하므로 신규 파일도 검토 대상에 포함한다. 환경/의존성/명령/종료 코드/로그/시각을 함께 남긴다.
 - 앱은 서비스별 격리 환경에서 기존 단위/계약 시험을, Monitoring은 각 셸 파일 구문 검사를 수행한다. PKI Linux 시험은 승인된 Linux 검증 환경에서 `python3 -m unittest discover -s tools/pki -p 'test_*.py' -v`로 실행한다. 실제 key/CSR 생성과 시연 스크립트 실행은 소스 검증에 포함하지 않는다.
 - 환경상 실행하지 못한 시험은 미실행으로 남긴다. 이번처럼 로직·프로파일·의존성 경로가 동일한 이관은 원본의 승인·시험 이력과 파일 동일성을 독립 검토자가 대조하여 제한 수용 여부를 명시한다. 이 문서가 그 수용·승인을 대신하지 않는다. 기능·경로·의존성 변경 시 관련 시험을 새로 수행한다.
-- 조직 Actions 허용, 신규 저장소의 중앙 Runner 접근, 배포 Secret/Token 제공은 이번 변경에 포함하지 않는다. 향후 소스 CI 활성화를 채택하더라도 중앙 Runner 등록 범위나 내부망 접근을 자동 확대하지 않는다.
+- 조직 Actions 허용, 신규 저장소의 중앙 Runner 접근, 배포 Secret/Token 제공은 이번 변경에 포함하지 않는다. 소스 CI 실행 허용을 중앙 Runner 등록 범위나 내부망 접근 확대로 해석하지 않는다.
 
 ## 5. 비밀정보·실행·증적
 
