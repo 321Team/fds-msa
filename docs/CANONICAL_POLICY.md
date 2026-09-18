@@ -1,11 +1,11 @@
 # 정본 대응과 저장소 책임
 
-기준 확인: 2026-09-17 KST. 발행 정본 `docs-v3.1.18`, 승인 source `72599ae49342b0fb8dbd3d8ee60314afb9f907bb`. 이 문서는 정본을 새로 발행하거나 기존 Decision·AC를 변경하지 않는다.
+기준 확인: 2026-09-17 KST. 발행 정본 `docs-v3.1.18`, 승인 source `72599ae49342b0fb8dbd3d8ee60314afb9f907bb`. 이 문서는 정본을 새로 발행하거나 기술 AC를 변경하지 않는다. 승인 절차는 [2026-09-18 사용자 변경결정](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md)을 우선 적용한다.
 
 | 정책 | 직접 근거 | 적용 성격 |
 |---|---|---|
-| Private, reviewed PR, 독립 Reviewer, 수동 merge, CI 미실행 표기 | [RELEASE_POLICY §1·§4·§5·§6](https://github.com/321Team/fds-project-baseline/blob/121fb744f0d816b3910a0bb07cf2bbe0d8883a16/governance/RELEASE_POLICY.md) | 정본의 보상 통제를 이번 신규 소스 운영에 적용 |
-| Lead 구현 → Support 영향/보안/운영 검토 → 증적·승인 후 Done | [Baseline §3.4·§17](https://github.com/321Team/fds-project-baseline/blob/72599ae49342b0fb8dbd3d8ee60314afb9f907bb/baseline/FDS_Project_Implementation_Baseline_v3.1.18.md) | 기존 티켓 lifecycle/인수 조건 유지 |
+| Private, PR, 수동 merge, CI 미실행 표기; 독립 리뷰는 코드 병합에 한정 | [2026-09-18 Lead 위임 정책](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md), 기존 RELEASE_POLICY | 기존 검증 통제 유지, 독립 승인 적용 범위 개정 |
+| 코드 외 실행·증적 수용·인수·종결은 해당 Lead 판단 | [2026-09-18 사용자 변경결정](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md); 기존 Baseline §3.4·§17의 일반적 승인 절차를 개정 | 필수 AC·시험·증적 유지, Support 별도 승인은 상시 필수 아님 |
 | 기존 운영 담당과 정본 승인 역할 구분 | [Baseline §3](https://github.com/321Team/fds-project-baseline/blob/72599ae49342b0fb8dbd3d8ee60314afb9f907bb/baseline/FDS_Project_Implementation_Baseline_v3.1.18.md), [Identity Map](https://github.com/321Team/fds-project-baseline/blob/121fb744f0d816b3910a0bb07cf2bbe0d8883a16/governance/GITHUB_IDENTITY_MAP.md) | 기존 역할 유지, 권한 변경 없음 |
 | 중앙 Delivery와 단순 소스 검증 분리 | [Baseline §5·§10](https://github.com/321Team/fds-project-baseline/blob/72599ae49342b0fb8dbd3d8ee60314afb9f907bb/baseline/FDS_Project_Implementation_Baseline_v3.1.18.md), [병합된 infra-cicd README/운영 기준](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/README.md) | Runner 접근 확대 없음 |
 | 3개 저장소 이름, snapshot-copy, 폴더, 브랜치 접두어 | 이번 사용자 개설·정본 기준 정책·이관 요청 | 이번 운영 세칙, 정본의 원문 강제 사항으로 표시하지 않음 |

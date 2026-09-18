@@ -30,3 +30,7 @@ GitHub 제공 ubuntu-24.04, contents:read, checkout credential 비보존, repo �
 이번 후속 변경은 POLICY·정본 대응표·README·PR 양식·이 검증 기록의 문서 5개에 한정한다. 이관된 코드/프로파일/테스트/Workflow/manifest는 변경하지 않는다. 이전 단위시험 결과를 새 CI 결과로 표시하지 않는다. 변경 문서 구문·상대 링크·이관 hash 보존과 원격 blob/mode 대조 결과는 이 후속 commit의 PR 본문에 기록한다.
 
 세 신규 저장소 Actions가 조직 정책으로 비활성인 점을 2026-09-17 16:27 KST 확인했다. 정본 RELEASE_POLICY §6의 보상 통제를 이번 운영에 적용하며, CI 활성화 자체를 소스 이관 선행조건으로 추가하지 않는다. 실제 CI=NOT RUN, Runtime=NOT RUN, 독립 REVIEW=PENDING이다. 제한 수용·소스 병합·소비자 전환은 각각 별도 기록한다.
+
+## 2026-09-18 승인 절차 변경
+
+[사용자 변경결정](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md)에 따라 독립 리뷰는 코드 병합에 한정한다. 이번 보완은 정책·대응표·README·PR 양식·이 검증 설명의 Markdown 5개 변경이며, 기존 코드·Workflow·이관 manifest와 시험 이력은 보존한다. 이관 PR 전체에는 코드가 포함되므로 독립 리뷰가 계속 필요하다. 코드 외 Runtime·증적 수용·인수·종결은 해당 Lead가 결정한다. 이번 문서 보완으로 CI/Runtime을 새로 수행하거나 과거 검증 상태를 상향하지 않는다.
