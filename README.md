@@ -26,3 +26,5 @@ Monitoring 전체는 [infra-monitoring](https://github.com/321Team/infra-monitor
 ## 정본에 따른 운영 결정
 
 [운영 정책](docs/POLICY.md)과 [정본 대응·책임 경계](docs/CANONICAL_POLICY.md)를 적용한다. Private/main을 유지하고, 이번 소스 이관은 로컬 검증 증적과 독립 검토 후 수동 병합으로 판단한다. Actions 활성화는 이관의 새 필수 AC가 아니며 CI 미실행은 NOT RUN으로 기록한다. 중앙 Delivery는 기존 infra-cicd 전용 Runner 경계를 유지한다.
+
+2026-09-18 승인 절차 개정: **코드/실행 설정을 포함한 PR 병합만 독립 리뷰**를 거친다. 문서·증적만 변경한 PR과 Runtime 실행·인수·종결은 해당 Lead가 판단하며 동일 코드의 실행마다 독립 승인을 반복하지 않는다. 이번 이관 PR은 코드를 포함하므로 독립 리뷰를 유지한다. [공통 변경결정](https://github.com/321Team/fds-project-baseline/blob/38f682141c279807050c5b1ea1b4e2b58ee22d63/governance/REVIEW_AUTHORITY_POLICY.md)과 [운영 정책](docs/POLICY.md)을 따른다.
