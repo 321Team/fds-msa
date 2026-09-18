@@ -1,0 +1,38 @@
+name: Source validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == '321Team/fds-msa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # inherited pin from infra-cicd
+        with:
+          persist-credentials: false
+      - name: Static source checks
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 tools/check_source.py
+      - name: Application unit and contract smoke tests
+        run: |
+          set -euo pipefail
+          for service in transaction-api fds-engine; do
+            python3 -m venv "$RUNNER_TEMP/$service-venv"
+            "$RUNNER_TEMP/$service-venv/bin/python" -m pip install -r "$service/requirements-test.txt"
+            (cd "$service" && "$RUNNER_TEMP/$service-venv/bin/python" -m pytest -q)
+          done
