@@ -24,15 +24,24 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # inherited pin from infra-cicd
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Static source checks
         run: |
+          set -euo pipefail
           python3 -m pip install PyYAML==6.0.2
           python3 tools/check_source.py
+          python3 tools/check_dependency_locks.py
+          python3 -m unittest discover -s tools/tests -p 'test_dependency_locks.py' -v
       - name: Application unit and contract smoke tests
         run: |
           set -euo pipefail
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
           for service in transaction-api fds-engine; do
             python3 -m venv "$RUNNER_TEMP/$service-venv"
-            "$RUNNER_TEMP/$service-venv/bin/python" -m pip install -r "$service/requirements-test.txt"
+            wheelhouse="$RUNNER_TEMP/$service-wheels"
+            mkdir "$wheelhouse"
+            PIP_CONFIG_FILE=/dev/null "$RUNNER_TEMP/$service-venv/bin/python" -I -m pip --isolated --disable-pip-version-check --no-cache-dir download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$service/requirements-test.lock" --dest "$wheelhouse"
+            PIP_CONFIG_FILE=/dev/null "$RUNNER_TEMP/$service-venv/bin/python" -I -m pip --isolated --disable-pip-version-check --no-cache-dir install --no-index --find-links="$wheelhouse" --only-binary=:all: --require-hashes -r "$service/requirements-test.lock"
+            "$RUNNER_TEMP/$service-venv/bin/python" -I -m pip --isolated --disable-pip-version-check check
             (cd "$service" && "$RUNNER_TEMP/$service-venv/bin/python" -m pytest -q)
           done

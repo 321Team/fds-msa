@@ -1,5 +1,52 @@
 # 앱 취약점 개선 후보 — 2026-09-24
 
+## 2026-09-24 후속 보완 — hash lock CI 및 base 검사 제한
+
+**최신 판정: 앱 의존성·CI 후보 준비 / BASE_SCAN_ACCEPTANCE=BLOCKED_EVIDENCE_INTEGRITY / 실제 앱 Build·Scan 미실행.**
+
+기존 Source CI는 requirements-test.txt에서 전이 의존성을 다시 해결했다. 이번 보완은 다음 차이를 해소한다.
+
+- PR HEAD를 명시적으로 checkout하고 CPython3.12를 확인한다.
+- requirements-test.lock의 hash로 wheel을 내려받고, 새 venv에 --no-index·--only-binary·--require-hashes로 설치한 뒤 pip check·앱 시험을 실행한다.
+- tools/check_dependency_locks.py가 roots의 pin/extras, lock SHA256 형식·중복, runtime/test의 공통 버전·wheel hash를 대조한다. 전체 의존성 해결은 pip 설치/check에서 검증한다.
+- 실제 프로필 복사본에 결함을 주입한 시험8개는 로컬 PASS다. 앱/requirements/lock/Dockerfile/기존 공급 바이트는 직전 f5ba3bf 후보와 동일하다. 이전 앱40PASS는 이 동일 입력의 이력이며 새 CI 결과는 실제 새 HEAD Run으로 별도 확인한다.
+- 이 변경은 CI 게이트 코드·Workflow이므로 Pre-check 예외가 아니며 독립 코드 리뷰가 필요하다.
+
+### Base 진단: 원문 관찰과 채택 판단 분리
+
+고정 Trivy0.74.0의 실제 binary hash를 프로젝트 pin과 대조하고, 공식 GHCR DB를 새 작업 경로에 내려받아 base OCI를 검사했다. 새 다운로드로 한 번 재확인한 원문에는 아래 탐지가 기록돼 있다.
+
+| base 후보 | 원문 HIGH | 원문 CRITICAL | 원문 고유 CVE | 최종 수용 |
+|---|---:|---:|---:|---|
+| Python3.12.14 slim-trixie / 44ff437b… | 44 | 0 | 8 | DB 사후 해시 불일치로 정식 비교 검증 수용 보류 |
+| Python3.12.14 slim-bookworm / 1aaa65a8… | 55 | 5 | 21 | 같은 제한. 대체 base로 채택하지 않음 |
+
+두 보고서는 base-only이며 앱 의존성을 설치한 최종 이미지 결과가 아니다. 보고서의 config digest·diff ID·report hash는 대조됐지만 DB 바이트가 사후 기록과 달라 전체 검증을 PASS로 표시하지 않는다.
+
+- 최초/재다운로드 실행 내부 기록 DB hash: 779370a79257ff2384790625b52f6daace2fed7be5fd2ffa158710f179587dc6.
+- 첫 실행 사후 DB hash: 8cf4c7e114c20771846cccde8aef6100858e85f3bd45015e7989810b35fd61fd.
+- 재다운로드 사후 DB hash: c15fd665f6ac153cd2f7046a47728974b6a6fd18cb540c8224c8b7dedc8bcb03. 시스템 sha256sum과 Python streaming hash 및 별도 사본이 일치했다.
+- 해당 사본의 재사용 진단은 Trivy bbolt Page.FastCheck의 fatal error/SIGSEGV, exit2로 중단됐다. 이후 bookworm 재사용 진단은 미실행이다.
+- 원인은 UNKNOWN이다. 버전 pin을 바꾸거나 검사를 완화하지 않았고, Codex 관찰을 cicd-runner01의 장애로 일반화하지 않는다. 원본 결과의 COMPARISON_COMPLETE 문구도 최종 수용 판정이 아니다.
+- 원문·명령·시각·해시·실패 로그·최종 ASSESSMENT를 별도 후속 증적에 보존한다. 이 결과로 취약점 예외·base 교체·운영 승인을 만들지 않는다.
+
+### 중앙 CI 인계 시 포함할 시험
+
+현재 infra-cicd main de6289f의 config/app-build-scan.json에는 새 회귀 파일이 없다. 최종 앱/공급 승인값을 준비한 뒤 config PR에서 아래 목록을 반영한다. 현행 운영 config는 수정하지 않았다.
+
+| 서비스·단계 | 서비스 디렉터리 기준 argv | 현재 후보의 시험 수 |
+|---|---|---:|
+| transaction-api Contract | .venv/bin/python -m pytest -q tests/test_health.py tests/test_metrics.py tests/test_dependency_upgrade_contract.py | 14 |
+| fds-engine Unit | .venv/bin/python -m pytest -q tests/test_rules.py | 16 |
+| fds-engine Contract | .venv/bin/python -m pytest -q tests/test_health.py tests/test_metrics.py tests/test_dependency_upgrade_contract.py | 10 |
+
+transaction-api Unit의 기존 N/A 승인이나 업무 계약을 새 후보에 자동 승계하지 않으며 최종 인계에서 해당 Lead가 시험 범위를 확인한다. 해소되지 않은 입력은 최종 앱 승인 SHA·실제 공급 경로·안정된 DB/실행 환경에서의 이미지 검증이다.
+
+---
+
+<details>
+<summary>최초 후보 준비 이력 — 후속 판정은 위 내용 적용</summary>
+
 **후보 구현·로컬 검증 완료 / 독립 코드 리뷰·실제 이미지 Build/Scan 대기.**
 책임: [P1-APP-01](https://github.com/321Team/fds-project-baseline/issues/15) 앱 Lead 이재환, Support 이하영; [P1-CICD-01 #11](https://github.com/321Team/infra-cicd/issues/11) 인계 담당 이권욱.
 사용자 “착수” 지시에 따른 Codex 보조 구현이며 역할·승인권·운영 Source를 변경하지 않는다.
@@ -67,3 +114,5 @@ FastAPI는 Python>=3.10 / Starlette>=0.46.0 / Pydantic>=2.9.0이고, Starlette�
 
 병합 전 복구는 후보 보류다. 병합 후 결함이면 코드 revert PR과 소비자 pin을 함께 검토하며, 과거 취약 버전을 안전한 배포본으로 간주하지 않는다. 현재 운영 서버 변경이 없어 이번 작업의 서버 rollback은 없다.
 독립 증적 편입 [PR22](https://github.com/321Team/fds-project-evidence/pull/22)는 별도다. 본 작성자 검증을 독립 증적 승인으로 표시하지 않는다.
+
+</details>
