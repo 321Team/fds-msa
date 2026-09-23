@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "purpose": "이관 manifest(docs/MIGRATION_MANIFEST.json) 이후 리뷰·병합된 의도적 변경 기록. manifest는 수정하지 않는다.",
+  "changes": [
+    {
+      "path": "fds-engine/Dockerfile",
+      "change_commit": "7a8f3298e8e73f49cd5e2f5a7895cbbf192e9f63",
+      "pull_request": "https://github.com/321Team/fds-msa/pull/2",
+      "reason": "CICD 오프라인 Build 입력: base digest 고정, hash lock 기반 오프라인 설치",
+      "reference": "docs/CICD_OFFLINE_HANDOFF_20260917.md",
+      "current_sha256": "5849c5f9c225a54be8d6b4d0d602f443cb4e797688f867d6b7962f8c4b671607",
+      "current_blob": "28c3dae07f77f649ae9449b694b86a6c9158bdc3"
+    },
+    {
+      "path": "transaction-api/Dockerfile",
+      "change_commit": "7a8f3298e8e73f49cd5e2f5a7895cbbf192e9f63",
+      "pull_request": "https://github.com/321Team/fds-msa/pull/2",
+      "reason": "CICD 오프라인 Build 입력: base digest 고정, hash lock 기반 오프라인 설치",
+      "reference": "docs/CICD_OFFLINE_HANDOFF_20260917.md",
+      "current_sha256": "01ab8a025e976b3563fca51b88fc299315b4c5edb85f965d200844f971b77e99",
+      "current_blob": "5753c516cdcfd4aaced19b5a54b1801b1971c896"
+    }
+  ]
+}
