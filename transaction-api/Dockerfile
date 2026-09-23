@@ -1,4 +1,4 @@
-FROM docker.io/library/python@sha256:2fe5997d249a808b8eeea52c58a1dbffbba28754dc11699ef5c029f2d818ce79
+FROM docker.io/library/python@sha256:44ff437bba879d4941b710a369a8f19266aea34b29002807f0c487fabc9eec9b
 
 WORKDIR /app
 COPY --from=python-wheels / /opt/wheels/
