@@ -1,5 +1,19 @@
 # 앱 취약점 개선 후보 — 2026-09-24
 
+## GitHub 호스팅 격리 후보 시험 — 2026-09-24 추가
+
+중앙 REVIEW_AUTHORITY_POLICY §4는 병합 전 후보 CI·격리 시험을 허용한다. 사용자 후속 “착수”에 따라 PR7의 Source CI 성공 후 별도 GitHub-hosted ubuntu-24.04 Job에서 두 실제 이미지를 Build/Scan하도록 준비했다. 코드/CI 변경이므로 독립 리뷰 없이 병합하지 않는다. 앱 승인 Source나 운영 Runner 실행 권한으로 승격하지 않는다.
+
+- 대상: 같은 저장소 PR7의 정확한 HEAD, GitHub-hosted·pull_request 환경으로 제한. fork/main push/다른 PR에서는 실행하지 않는다.
+- 공개 공급: 기존 digest base, hash lock runtime wheels, Trivy0.74.0 release/archive 및 binary pin, 새 ghcr.io/aquasecurity/trivy-db:2. 기존 DB/오류 사본 재사용 없음.
+- 두 이미지는 Docker Buildx의 network=none RUN, 별도 wheel context로 설치하고 linux/amd64·base layers·비root USER를 검사한다. 중앙 Podman 빌드 동등성·운영 수신 인수는 별도다.
+- 두 Build 후 API부터 Scan. HIGH/CRITICAL은 exit10/BLOCK, DB·스캐너·identity 오류는 ERROR. 첫 실패 시 engine NOT_SCANNED, Push/Deploy는 구현하지 않는다.
+- DB/metadata·이미지·binary를 Python streaming + sha256sum으로 교차 대조하고 Scan 전후 및 driver 종료 후 별도 workflow step에서 재검사한다. OS 및 FastAPI/Starlette package inventory, report identity·exit/count도 대조한다.
+- 원본 로그/명령/시각·두 Docker archives·DB·metadata·report·result·SHA256SUMS는 실패 시에도 Actions artifact로 14일 보존한다. 이 후보 artifact를 운영 공급물로 자동 채택하지 않는다.
+- 복구: ephemeral Job 종료 및 후보 보류. 서버 설치·계정/권한·Harbor·클러스터·Push/Deploy·현행 config 변경 없음.
+
+작성 시 실행 결과는 NOT RUN이며 실제 Run/Attempt·HEAD·artifact 수신 결과를 PR/티켓에서 갱신한다. 이전 Codex DB 무결성 오류는 새 회차 PASS로 소급 수정하지 않는다. 정적/단위 검사와 격리 실제 Build/Scan, on-prem Runtime 및 독립 리뷰를 구분한다.
+
 ## 2026-09-24 후속 보완 — hash lock CI 및 base 검사 제한
 
 **최신 판정: 앱 의존성·CI 후보 준비 / BASE_SCAN_ACCEPTANCE=BLOCKED_EVIDENCE_INTEGRITY / 실제 앱 Build·Scan 미실행.**

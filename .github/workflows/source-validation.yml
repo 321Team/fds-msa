@@ -31,7 +31,7 @@ jobs:
           python3 -m pip install PyYAML==6.0.2
           python3 tools/check_source.py
           python3 tools/check_dependency_locks.py
-          python3 -m unittest discover -s tools/tests -p 'test_dependency_locks.py' -v
+          python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
       - name: Application unit and contract smoke tests
         run: |
           set -euo pipefail
@@ -45,3 +45,34 @@ jobs:
             "$RUNNER_TEMP/$service-venv/bin/python" -I -m pip --isolated --disable-pip-version-check check
             (cd "$service" && "$RUNNER_TEMP/$service-venv/bin/python" -m pytest -q)
           done
+
+  candidate-images:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 7 && github.event.pull_request.head.repo.full_name == '321Team/fds-msa'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Build and scan candidate images without delivery
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/candidate_image_validation.py "$RUNNER_TEMP/candidate-evidence"
+      - name: Independently verify preserved evidence after the driver exits
+        if: always()
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate-evidence"
+          sha256sum --check SHA256SUMS
+          if test -f DB_SHA256SUMS; then sha256sum --check DB_SHA256SUMS; fi
+      - name: Preserve raw candidate evidence including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-images-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-evidence/
+          if-no-files-found: error
+          retention-days: 14
