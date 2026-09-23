@@ -1,6 +1,6 @@
 # 저장소 운영 정책
 
-상태: 정본 기준의 이관 정책에 2026-09-18 KST 사용자 승인 절차 변경을 반영했다. **이 소스 저장소의 코드·혼합 PR은 독립 리뷰, 코드 외 절차는 해당 Lead가 판단한다. fds-project-evidence는 모든 PR에 독립 리뷰가 필요한 예외다.** [변경결정 원문](https://github.com/321Team/fds-project-baseline/blob/b2e4612cf2e417b10e7f145c5b1e5f58dbe1b948/governance/REVIEW_AUTHORITY_POLICY.md)은 [정본 정책 PR #80](https://github.com/321Team/fds-project-baseline/pull/80) 및 [증적 저장소 예외 PR #81](https://github.com/321Team/fds-project-baseline/pull/81)에서 추적한다. 문서 기록·PR 병합·정본 발행 상태는 구분한다.
+상태: 정본 기준의 이관 정책에 2026-09-18 KST 사용자 승인 절차 변경을 반영했다. **이 소스 저장소의 코드·혼합 PR은 독립 리뷰, 코드 외 절차는 해당 Lead가 판단한다. fds-project-evidence는 모든 PR에 독립 리뷰가 필요한 예외다.** 2026-09-23부터 사전 검증(Pre-check) 코드는 담당 Lead 권한으로 코드 리뷰 없이 병합할 수 있고, 운영 서버 Runtime 적용 전에 코드 리뷰가 필수다(§3.1). [변경결정 원문](https://github.com/321Team/fds-project-baseline/blob/b2e4612cf2e417b10e7f145c5b1e5f58dbe1b948/governance/REVIEW_AUTHORITY_POLICY.md)은 [정본 정책 PR #80](https://github.com/321Team/fds-project-baseline/pull/80) 및 [증적 저장소 예외 PR #81](https://github.com/321Team/fds-project-baseline/pull/81)에서 추적한다. 문서 기록·PR 병합·정본 발행 상태는 구분한다.
 
 ## 1. 적용 근거와 권한 범위
 
@@ -28,6 +28,31 @@
 코드에는 앱·테스트·스크립트·IaC·manifest·Workflow·의존성·인증서 profile·실행 시 소비되는 정책/설정이 포함된다. 혼합 PR은 코드 기준을 적용하며 확장자만으로 판단하지 않는다. 실행 입력이 아닌 정책/Runbook 설명·공개 지문·증적 기록은 문서다. 코드 변경을 문서나 운영 작업으로 분류해 독립 리뷰를 우회하지 않는다.
 
 병합 전 정적·단위/모의·CI·격리 환경 시험은 후보 SHA·시험 범위·격리/복구 조건을 기록하고 Lead 판단으로 수행할 수 있다. 시험을 위해 독립 승인이나 병합을 먼저 요구하지 않는다.
+
+## 3.1 사전 검증(Pre-check) 코드 예외 — 2026-09-23
+
+적용 기준: 프로젝트 중간 결과 회고에 따른 2026-09-23 KST 사용자 정책 변경 안내. 상세 기준은 [중앙 리뷰 권한 정책 §3.2](https://github.com/321Team/fds-project-baseline/blob/ea2488b33a870d35c16bd303af568c5fe48c2e44/governance/REVIEW_AUTHORITY_POLICY.md)([PR #93](https://github.com/321Team/fds-project-baseline/pull/93))를 따른다. 중앙 PR 병합 전까지 이 절은 제안 상태다.
+
+| 단계 | 검토와 병합 |
+|---|---|
+| Pre-check 코드 병합 | 사전 검증 단계의 점검·수집·판정용 스크립트·검증기와 그 시험 코드는 별도 코드 리뷰 없이 책임 티켓의 담당 Lead 권한으로 즉시 병합할 수 있다. |
+| 운영(Production) 서버 Runtime 적용 | 운영 서버에서 실행·설치·배포·영구 반영하거나 운영 배포 경로에 편입하는 시점부터 코드 리뷰가 필수다. 읽기 전용 실행도 포함한다. |
+
+- **Pre-check 병합 기록.**
+  - PR은 계속 사용한다. main 직접 push·force push·자동 병합은 금지다.
+  - PR에 `Pre-check` 분류, 책임 티켓, 병합 SHA, 담당 Lead, KST 시각을 남긴다.
+  - 리뷰 상태는 `REVIEW=NOT PERFORMED (Pre-check)`로 표기한다. 이 병합을 리뷰 완료, Runtime PASS, AC 인수로 표시하지 않는다.
+- **운영 적용 전 절차.**
+  - 적용할 SHA를 고정한다.
+  - 직전 독립 리뷰 SHA 이후 전체 diff를 작성자 외 적격 검토자가 리뷰한다. 리뷰 이력이 없으면 적용 대상 코드 전체가 범위다.
+  - Lead는 리뷰 완료 SHA와 적용 SHA의 일치를 실행 기록에 남긴다.
+  - 리뷰 후 수정 PR은 일반 코드 PR 절차를 따른다.
+- **대상 외(기존 독립 리뷰 유지).**
+  - Pre-check 코드와 운영 Runtime 코드·manifest·IaC·배포 설정이 섞인 혼합 PR
+  - 병합·Release 게이트 CI workflow
+  - 시크릿·무결성 등 보안 통제 코드
+  - fds-project-evidence의 모든 PR
+- **유지 통제.** 비밀정보 커밋 금지, 필수 AC·시험·보안 기준, 운영 적용 시 선행조건·중단·복구 기준은 완화하지 않는다.
 
 ## 4. CI 결정과 보상 검증
 
