@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Numeric, Text, text
+from sqlalchemy import Boolean, Index, Numeric, Text, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -42,6 +42,18 @@ class Transaction(Base):
     """거래 원본 + FDS 판정 결과 (fds_detected가 같은 테이블에 있음)."""
 
     __tablename__ = "transactions"
+    __table_args__ = (
+        # 0003: db01 실측으로 확인된 기존 인덱스 2종을 모델에도 반영 —
+        # 여기 선언 안 해두면 autogenerate가 "모델에 없다"고 오판해
+        # 삭제 마이그레이션을 제안할 수 있음.
+        Index("idx_transactions_account_id", "account_id"),
+        Index(
+            "idx_transactions_account_type_time",
+            "account_id",
+            "transaction_type",
+            "occurred_at",
+        ),
+    )
 
     transaction_id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(Text, nullable=False)
