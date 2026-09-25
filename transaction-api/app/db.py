@@ -13,13 +13,15 @@ DATABASE_URL = os.environ["DATABASE_URL"]  # postgresql+asyncpg://user:pass@10.1
 engine = create_async_engine(DATABASE_URL, pool_size=5, max_overflow=5, pool_pre_ping=True)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+# 스키마(인덱스 포함)의 권위 정의는 루트 alembic/versions 이다. 이 Table은
+# 쿼리 작성용 표현이며 create_all에 쓰지 않는다.
 metadata = MetaData()
 
 transactions = Table(
     "transactions",
     metadata,
     Column("transaction_id", String, primary_key=True),
-    Column("account_id", String, nullable=False, index=True),
+    Column("account_id", String, nullable=False),
     Column("amount", Numeric, nullable=False),
     Column("currency", String, nullable=False, default="KRW"),
     Column("transaction_type", String, nullable=False),

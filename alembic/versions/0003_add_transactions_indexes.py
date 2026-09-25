@@ -19,13 +19,23 @@ pg_indexes로 직접 조회해 확인함. transactions 테이블에는 0001/0002
 운영 스키마가 재현되도록 한다.
 
 [적용 방법]
-  - db01(기존 데이터 있음): 인덱스가 이미 존재하므로 upgrade()를 그대로
-    실행하면 "relation already exists" 오류가 날 수 있음. 실행 전
-    인덱스 존재 여부를 재확인한 뒤 `alembic stamp 0003`으로 "이미 이
-    상태다"라고 채택한다 (0001과 동일한 패턴). 운영 fdsdb에는 당장
-    upgrade()를 실행하지 않는다.
-  - 신규(로컬/CI/재현 테스트) 환경: upgrade()를 그대로 실행하면
-    0001+0002+0003으로 현재 운영 스키마와 동일한 상태가 재현된다.
+  - db01(기존 인덱스 있음): upgrade()를 실행하지 않는다. pg_indexes로 두
+    인덱스의 indexdef가 upgrade() 정의와 같은지 확인한 뒤 채택(stamp)한다.
+    db01에는 저장소가 없어 `alembic stamp`를 쓸 수 없으므로 아래 SQL로
+    수동 stamp하고, 실행 기록(대상·계정·KST 시각·전후 값)을
+    fds-project-evidence evidence/P1-DB-01/에 남긴다.
+        BEGIN;
+        SELECT version_num FROM alembic_version;          -- 0002 확인
+        UPDATE alembic_version SET version_num = '0003'
+         WHERE version_num = '0002';                       -- UPDATE 1 확인
+        COMMIT;
+    되돌리기(이 revision 반려 시, 인덱스는 유지):
+        UPDATE alembic_version SET version_num = '0002'
+         WHERE version_num = '0003';
+    2026-09-25 db01 읽기 전용 실측에서 indexdef·컬럼·제약이 이 revision
+    까지의 재현 결과와 일치함을 확인했다.
+  - 신규(로컬/CI/재현 테스트) 환경: `alembic upgrade head`로
+    0001+0002+0003이 현재 운영 스키마와 동일하게 재현된다.
 """
 from typing import Sequence, Union
 
@@ -51,5 +61,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """신규/재현 환경 전용. db01에서는 실행하지 않는다.
+
+    db01의 두 인덱스는 0003 이전부터 존재한 운영 인덱스이므로, 되돌릴 때는
+    alembic_version만 0002로 복구한다(인덱스는 유지).
+    """
     op.drop_index("idx_transactions_account_type_time", table_name="transactions")
     op.drop_index("idx_transactions_account_id", table_name="transactions")
