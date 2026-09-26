@@ -61,7 +61,7 @@ jobs:
           git diff --exit-code
 
   candidate-images:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && (github.event.pull_request.number == 7 || startsWith(github.event.pull_request.head.ref, 'app/distroless-py313-'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.number == 7
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -90,3 +90,11 @@ jobs:
           path: ${{ runner.temp }}/candidate-evidence/
           if-no-files-found: error
           retention-days: 7
+
+  candidate-images-apko:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && startsWith(github.event.pull_request.head.ref, 'app/distroless-py313-')
+    needs: validate
+    uses: ./.github/workflows/apko-wolfi-py313.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha }}
+
