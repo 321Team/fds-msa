@@ -46,7 +46,7 @@ jobs:
           mkdir -p "$evidence" "$work"             "$evidence/builder-sbom" "$evidence/runtime-sbom"
 
           archive="$work/apko.tar.gz"
-          curl -q --fail --location --proto '=https' --tlsv1.2             --output "$archive"             "https://github.com/chainguard-dev/apko/releases/download/v$APKO_VERSION/apko_$APKO_VERSION_linux_amd64.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2             --output "$archive"             "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz"
           echo "$APKO_ARCHIVE_SHA  $archive" | sha256sum --check -
 
           tar -xzf "$archive" -C "$work"
