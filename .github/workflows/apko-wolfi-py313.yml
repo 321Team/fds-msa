@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: apko-wolfi-py313-${{ github.event.pull_request.number || github.ref }}
@@ -64,6 +64,19 @@ jobs:
 
           "$apko" lock "$builder_cfg" --output "$builder_lock" --arch=amd64
           "$apko" lock "$runtime_cfg" --output "$runtime_lock" --arch=amd64
+
+          repo_builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
+          repo_runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
+
+          if [ -f "$repo_builder_lock" ] || [ -f "$repo_runtime_lock" ]; then
+            test -f "$repo_builder_lock"
+            test -f "$repo_runtime_lock"
+            cmp -s "$repo_builder_lock" "$builder_lock"
+            cmp -s "$repo_runtime_lock" "$runtime_lock"
+            echo "APKO_REPO_LOCKFILES_MATCH=PASS" | tee "$evidence/repo-lockfile-match.txt"
+          else
+            echo "APKO_REPO_LOCKFILES_MATCH=NOT_YET_PINNED" | tee "$evidence/repo-lockfile-match.txt"
+          fi
 
           sha256sum             "$builder_cfg"             "$runtime_cfg"             "$builder_lock"             "$runtime_lock"             > "$evidence/apko-input-SHA256SUMS"
 
@@ -439,3 +452,39 @@ jobs:
           path: ${{ runner.temp }}/apko-wolfi-py313/evidence/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Pin generated apko lockfiles once
+        if: success() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          evidence="$RUNNER_TEMP/apko-wolfi-py313/evidence"
+          repo_builder="ci/apko/wolfi-python313-builder.apko.lock.json"
+          repo_runtime="ci/apko/wolfi-python313-runtime.apko.lock.json"
+
+          if [ -f "$repo_builder" ] || [ -f "$repo_runtime" ]; then
+            test -f "$repo_builder"
+            test -f "$repo_runtime"
+            cmp -s "$repo_builder" "$evidence/wolfi-python313-builder.apko.lock.json"
+            cmp -s "$repo_runtime" "$evidence/wolfi-python313-runtime.apko.lock.json"
+            echo "APKO_LOCKFILES_ALREADY_PINNED=PASS"
+            exit 0
+          fi
+
+          install -m 0644 "$evidence/wolfi-python313-builder.apko.lock.json" "$repo_builder"
+          install -m 0644 "$evidence/wolfi-python313-runtime.apko.lock.json" "$repo_runtime"
+
+          sha256sum "$repo_builder" "$repo_runtime"
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$repo_builder" "$repo_runtime"
+          git diff --cached --quiet && exit 0
+          git commit -m "ci: pin apko Wolfi Python 3.13 lockfiles"
+
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth"             push origin "HEAD:$PR_HEAD_REF"
