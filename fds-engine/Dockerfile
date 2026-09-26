@@ -8,6 +8,7 @@ COPY --from=python-wheels / /opt/wheels/
 COPY requirements-runtime.lock .
 RUN PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check --no-cache-dir install --no-index --find-links=/opt/wheels --only-binary=:all: --require-hashes -r requirements-runtime.lock \
     && PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check check \
+    && PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check uninstall -y pip setuptools \
     && rm -rf /opt/wheels
 
 FROM ${RUNTIME_IMAGE}
