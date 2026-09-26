@@ -49,9 +49,11 @@ jobs:
           curl -q --fail --location --proto '=https' --tlsv1.2             --output "$archive"             "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz"
           echo "$APKO_ARCHIVE_SHA  $archive" | sha256sum --check -
 
+          tar -tzf "$archive" | tee "$evidence/apko-archive-members.txt"
           tar -xzf "$archive" -C "$work"
-          apko="$work/apko"
-          test -x "$apko"
+          mapfile -t apko_bins < <(find "$work" -maxdepth 3 -type f -name apko -perm -u+x -print)
+          test "${#apko_bins[@]}" -eq 1
+          apko="${apko_bins[0]}"
           "$apko" version | tee "$evidence/apko-version.txt"
           sha256sum "$archive" "$apko" > "$evidence/apko-tool-SHA256SUMS"
 
