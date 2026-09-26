@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   validate-candidate:
-    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
