@@ -1,0 +1,216 @@
+name: Chainguard Python 3.13 access and security probe
+
+on:
+  pull_request:
+    branches:
+      - fix/trivy-app-remediation-20260924
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chainguard-py313-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: python-313-runtime
+            image: cgr.dev/chainguard/python:3.13
+            expected_python: "3.13"
+            candidate: "true"
+          - id: python-313-dev
+            image: cgr.dev/chainguard/python:3.13-dev
+            expected_python: "3.13"
+            candidate: "true"
+          - id: public-registry-control
+            image: cgr.dev/chainguard/python:latest
+            expected_python: ""
+            candidate: "false"
+
+    steps:
+      - name: Checkout exact probe source without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Probe anonymous pull, immutable digest and Trivy
+        env:
+          PROBE_ID: ${{ matrix.id }}
+          PROBE_IMAGE: ${{ matrix.image }}
+          EXPECTED_PYTHON: ${{ matrix.expected_python }}
+          IS_CANDIDATE: ${{ matrix.candidate }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          TRIVY_ARCHIVE_SHA: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          TRIVY_BINARY_SHA: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+          root="$RUNNER_TEMP/chainguard-py313-probe"
+          out="$root/$PROBE_ID"
+          work="$root/work-$PROBE_ID"
+          mkdir -p "$out" "$work"
+
+          printf '%s\n' "$SOURCE_SHA" > "$out/source-sha.txt"
+          printf '%s\n' "$PROBE_IMAGE" > "$out/requested-image.txt"
+          printf '%s\n' "$IS_CANDIDATE" > "$out/is-candidate.txt"
+
+          set +e
+          docker pull --platform linux/amd64 "$PROBE_IMAGE" >"$out/pull.stdout" 2>"$out/pull.stderr"
+          pull_rc=$?
+          set -e
+          printf '%s\n' "$pull_rc" > "$out/pull-rc.txt"
+
+          if [ "$pull_rc" -ne 0 ]; then
+            python3 - "$out" "$PROBE_IMAGE" "$IS_CANDIDATE" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          out = pathlib.Path(sys.argv[1])
+          image = sys.argv[2]
+          is_candidate = sys.argv[3] == "true"
+          stderr = (out / "pull.stderr").read_text(errors="replace")
+          lowered = stderr.lower()
+          access_limited = any(token in lowered for token in (
+              "denied", "unauthorized", "authentication required",
+              "requested access to the resource is denied", "forbidden"
+          ))
+          summary = {
+              "schema": "fds.chainguard-py313-probe.v1",
+              "image": image,
+              "candidate": is_candidate,
+              "anonymous_pull": "DENIED" if access_limited else "ERROR",
+              "decision": "ACCESS_BLOCKED" if access_limited and is_candidate else "PROBE_ERROR",
+              "resolved_digest": None,
+              "trivy": "NOT_RUN",
+              "signature": "NOT_RUN",
+              "sbom": "NOT_RUN",
+              "provenance": "NOT_RUN",
+              "delivery_authorization": False,
+          }
+          (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(summary, sort_keys=True))
+          PY
+          else
+            resolved="$(docker image inspect --format '{{index .RepoDigests 0}}' "$PROBE_IMAGE")"
+            test -n "$resolved"
+            printf '%s\n' "$resolved" > "$out/resolved-image.txt"
+            docker image inspect "$PROBE_IMAGE" > "$out/image-inspect.json"
+
+            if [ -n "$EXPECTED_PYTHON" ]; then
+              set +e
+              docker run --rm --network none --entrypoint python "$resolved"                 -c 'import sys; print(sys.version); raise SystemExit(0 if sys.version_info[:2] == (3,13) else 9)'                 >"$out/python.stdout" 2>"$out/python.stderr"
+              py_rc=$?
+              set -e
+              printf '%s\n' "$py_rc" > "$out/python-rc.txt"
+              test "$py_rc" -eq 0
+            else
+              printf 'SKIPPED_CONTROL_IMAGE\n' > "$out/python.stdout"
+              printf '0\n' > "$out/python-rc.txt"
+            fi
+
+            release="$work/trivy.tar.gz"
+            curl -q --fail --location --proto '=https' --tlsv1.2               --output "$release"               https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+            echo "$TRIVY_ARCHIVE_SHA  $release" | sha256sum --check -
+            tar -xzf "$release" -C "$work" trivy
+            echo "$TRIVY_BINARY_SHA  $work/trivy" | sha256sum --check -
+            chmod 0755 "$work/trivy"
+
+            cache="$work/cache"
+            mkdir -p "$cache"
+            printf '{}\n' > "$work/empty.yaml"
+            : > "$work/empty.ignore"
+
+            "$work/trivy" image               --cache-dir "$cache"               --config "$work/empty.yaml"               --db-repository ghcr.io/aquasecurity/trivy-db:2               --download-db-only               --skip-version-check               --no-progress               --timeout 5m
+
+            set +e
+            "$work/trivy" image               --cache-dir "$cache"               --config "$work/empty.yaml"               --ignorefile "$work/empty.ignore"               --ignore-unfixed=false               --scanners vuln               --pkg-types os,library               --list-all-pkgs               --skip-db-update               --skip-java-db-update               --offline-scan               --skip-version-check               --severity HIGH,CRITICAL               --exit-code 10               --format json               --output "$out/report.json"               --no-progress               --timeout 10m               "$resolved"
+            scan_rc=$?
+            set -e
+            case "$scan_rc" in 0|10) ;; *) exit "$scan_rc";; esac
+
+            SCAN_RC="$scan_rc" python3 - "$out" "$resolved" "$IS_CANDIDATE" <<'PY'
+          import collections
+          import json
+          import os
+          import pathlib
+          import sys
+
+          out = pathlib.Path(sys.argv[1])
+          resolved = sys.argv[2]
+          is_candidate = sys.argv[3] == "true"
+          report = json.loads((out / "report.json").read_text())
+          rows = []
+          for result in report.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") in {"HIGH", "CRITICAL"}:
+                      rows.append({
+                          "id": vuln.get("VulnerabilityID"),
+                          "severity": vuln.get("Severity"),
+                          "package": vuln.get("PkgName"),
+                          "installed": vuln.get("InstalledVersion"),
+                          "fixed": vuln.get("FixedVersion") or "",
+                          "class": result.get("Class") or "",
+                          "type": result.get("Type") or "",
+                      })
+          counts = collections.Counter(row["severity"] for row in rows)
+          if not is_candidate:
+              decision = "REGISTRY_CONTROL_PASS"
+          elif counts["HIGH"] == 0 and counts["CRITICAL"] == 0:
+              decision = "SECURITY_PASS_NEXT_SUPPLY_CHAIN_GATE"
+          else:
+              decision = "BLOCK"
+          summary = {
+              "schema": "fds.chainguard-py313-probe.v1",
+              "candidate": is_candidate,
+              "anonymous_pull": "PASS",
+              "resolved_digest": resolved,
+              "trivy": {
+                  "scan_rc": int(os.environ["SCAN_RC"]),
+                  "HIGH": counts["HIGH"],
+                  "CRITICAL": counts["CRITICAL"],
+                  "findings": rows,
+              },
+              "decision": decision,
+              "signature": "NEXT_GATE_NOT_RUN",
+              "sbom": "NEXT_GATE_NOT_RUN",
+              "provenance": "NEXT_GATE_NOT_RUN",
+              "delivery_authorization": False,
+          }
+          (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({
+              "anonymous_pull": summary["anonymous_pull"],
+              "resolved_digest": summary["resolved_digest"],
+              "trivy": summary["trivy"],
+              "decision": summary["decision"],
+          }, sort_keys=True))
+          PY
+          fi
+
+          (
+            cd "$out"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0               | sort -z               | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Preserve Chainguard probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: chainguard-py313-probe-${{ matrix.id }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/chainguard-py313-probe/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 7
