@@ -1,35 +1,37 @@
 name: Wolfi Python 3.13 app candidate
 
 on:
-  pull_request:
-    branches:
-      - fix/trivy-app-remediation-20260924
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source commit SHA to reproduce
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: wolfi-py313-candidate-${{ github.event.pull_request.number || github.ref }}
+  group: wolfi-py313-candidate-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
   validate-candidate:
-    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
       WOLFI_TAG: cgr.dev/chainguard/wolfi-base:latest
       TRIVY_ARCHIVE_SHA: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
       TRIVY_BINARY_SHA: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
-      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
 
     steps:
       - name: Checkout exact candidate without persisted credentials
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Build Wolfi Python 3.13 candidates and run no-network smoke
         run: |
@@ -297,7 +299,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: wolfi-py313-candidate-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          name: wolfi-py313-candidate-${{ inputs.source_sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wolfi-py313-candidate/evidence/
           if-no-files-found: error
           retention-days: 7
