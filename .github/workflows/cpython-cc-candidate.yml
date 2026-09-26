@@ -1,9 +1,6 @@
 name: CPython on distroless cc candidate
 
 on:
-  pull_request:
-    branches:
-      - fix/trivy-app-remediation-20260924
   workflow_dispatch:
 
 permissions:
