@@ -1,25 +1,32 @@
 name: apko Wolfi Python 3.13 supply-chain candidate
 
 on:
-  pull_request:
-    branches:
-      - fix/trivy-app-remediation-20260924
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source commit SHA to validate
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: apko-wolfi-py313-${{ github.event.pull_request.number || github.ref }}
+  group: apko-wolfi-py313-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+    if: github.repository == '321Team/fds-msa'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       APKO_VERSION: "1.4.4"
       APKO_ARCHIVE_SHA: dbd9e8f416903b2d896497c51f3217259d03ecb45c997254cedca5274e8671db
       TRIVY_ARCHIVE_SHA: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
@@ -30,7 +37,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Build reproducible apko bases with lockfiles and SPDX SBOMs
         run: |
@@ -448,7 +455,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: apko-wolfi-py313-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          name: apko-wolfi-py313-${{ inputs.source_sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/apko-wolfi-py313/evidence/
           if-no-files-found: error
           retention-days: 14
