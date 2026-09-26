@@ -109,10 +109,68 @@ jobs:
           print("APKO_RUNTIME_USER=PASS", image["Config"]["User"])
           PY
 
-          docker run --rm "$builder_loaded" apk info -v | sort > "$evidence/builder-packages.txt"
-          docker run --rm "$runtime_loaded" apk info -v | sort > "$evidence/runtime-packages.txt"
-          docker run --rm "$builder_loaded" apk policy python-3.13 py3.13-pip > "$evidence/builder-policy.txt"
-          docker run --rm "$runtime_loaded" apk policy python-3.13 tzdata > "$evidence/runtime-policy.txt"
+          python3 - "$builder_lock" "$runtime_lock" "$evidence/builder-sbom/sbom-x86_64.spdx.json" "$evidence/runtime-sbom/sbom-x86_64.spdx.json" "$evidence" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          builder_lock_path, runtime_lock_path, builder_sbom_path, runtime_sbom_path, evidence_dir = sys.argv[1:]
+          evidence = pathlib.Path(evidence_dir)
+
+          def load_lock(path):
+              data = json.load(open(path))
+              return {(p["name"], p["version"]) for p in data["contents"]["packages"]}
+
+          def load_sbom(path):
+              data = json.load(open(path))
+              return {(p.get("name"), p.get("versionInfo")) for p in data.get("packages", [])}
+
+          builder_lock = load_lock(builder_lock_path)
+          runtime_lock = load_lock(runtime_lock_path)
+          builder_sbom = load_sbom(builder_sbom_path)
+          runtime_sbom = load_sbom(runtime_sbom_path)
+
+          required_builder = {
+              ("python-3.13", "3.13.15_git20260925-r0"),
+              ("py3.13-pip", "26.2.1-r1"),
+          }
+          required_runtime = {
+              ("python-3.13", "3.13.15_git20260925-r0"),
+              ("tzdata", "2026d-r0"),
+          }
+
+          assert required_builder <= builder_lock, sorted(required_builder - builder_lock)
+          assert required_runtime <= runtime_lock, sorted(required_runtime - runtime_lock)
+          assert not any(name == "apk-tools" for name, _ in builder_lock)
+          assert not any(name == "apk-tools" for name, _ in runtime_lock)
+
+          missing_builder = builder_lock - builder_sbom
+          missing_runtime = runtime_lock - runtime_sbom
+          assert not missing_builder, sorted(missing_builder)
+          assert not missing_runtime, sorted(missing_runtime)
+
+          for label, inventory in (("builder", builder_lock), ("runtime", runtime_lock)):
+              with open(evidence / f"{label}-packages.txt", "w") as out:
+                  for name, version in sorted(inventory):
+                      out.write(f"{name}={version}\n")
+
+          summary = {
+              "schema": "fds.apko-lock-sbom-consistency.v1",
+              "builder_package_count": len(builder_lock),
+              "runtime_package_count": len(runtime_lock),
+              "builder_required": sorted([{"name": n, "version": v} for n, v in required_builder], key=lambda x: x["name"]),
+              "runtime_required": sorted([{"name": n, "version": v} for n, v in required_runtime], key=lambda x: x["name"]),
+              "apk_tools_present": False,
+              "builder_lock_subset_of_sbom": True,
+              "runtime_lock_subset_of_sbom": True,
+              "decision": "PASS",
+          }
+          with open(evidence / "lock-sbom-consistency.json", "w") as out:
+              json.dump(summary, out, indent=2, sort_keys=True)
+              out.write("\n")
+
+          print(json.dumps(summary, sort_keys=True))
+          PY
 
           docker run --rm --network none --entrypoint python3.13 "$runtime_loaded"             -c 'import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; print(sys.version); print("APKO_ZONEINFO_ASIA_SEOUL=PASS")'             | tee "$evidence/runtime-python-smoke.txt"
 
