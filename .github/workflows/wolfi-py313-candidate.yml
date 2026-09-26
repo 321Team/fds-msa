@@ -59,7 +59,7 @@ jobs:
           cat > "$work/runtime.Dockerfile" <<'EOF'
           ARG WOLFI_BASE
           FROM ${WOLFI_BASE}
-          RUN apk add --no-cache                 python-3.13                 ca-certificates-bundle
+          RUN apk add --no-cache                 python-3.13                 ca-certificates-bundle                 tzdata
           EOF
 
           builder_tag="fds-wolfi-py313-builder:$SOURCE_SHA"
@@ -75,9 +75,9 @@ jobs:
           docker run --rm "$builder_tag" apk info -v | sort > "$evidence/wolfi-builder-packages.txt"
           docker run --rm "$runtime_tag" apk info -v | sort > "$evidence/wolfi-runtime-packages.txt"
           docker run --rm "$builder_tag" apk policy python-3.13 py3.13-pip > "$evidence/wolfi-builder-policy.txt"
-          docker run --rm "$runtime_tag" apk policy python-3.13 > "$evidence/wolfi-runtime-policy.txt"
+          docker run --rm "$runtime_tag" apk policy python-3.13 tzdata > "$evidence/wolfi-runtime-policy.txt"
 
-          docker run --rm --network none --entrypoint python3.13 "$runtime_tag"             -c 'import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; assert sys.version_info[:2] == (3,13), sys.version; print(sys.version)'             | tee "$evidence/wolfi-runtime-python.txt"
+          docker run --rm --network none --entrypoint python3.13 "$runtime_tag"             -c 'import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; print(sys.version); print("ZONEINFO_ASIA_SEOUL=PASS")'             | tee "$evidence/wolfi-runtime-python.txt"
 
           for service in transaction-api fds-engine; do
             wheels="$work/$service-wheels"
