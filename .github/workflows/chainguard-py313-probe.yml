@@ -1,9 +1,6 @@
 name: Chainguard Python 3.13 access and security probe
 
 on:
-  pull_request:
-    branches:
-      - fix/trivy-app-remediation-20260924
   workflow_dispatch:
 
 permissions:
