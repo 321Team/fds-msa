@@ -341,6 +341,11 @@ def execute(source, output):
             )
             if service == "transaction-api":
                 smoke += "import asyncpg;assert asyncpg.__version__=='0.30.0';"
+            smoke += (
+                "import importlib.util;"
+                "assert importlib.util.find_spec('pip') is None;"
+                "assert importlib.util.find_spec('setuptools') is None;"
+            )
             run(
                 service + "-runtime-smoke",
                 [
@@ -429,6 +434,7 @@ def execute(source, output):
             "".join(value + "  " + name + "\n" for name, value in db_hashes.items())
         )
 
+        blocked = False
         for service in SERVICES:
             db_check()
             result["images"][service]["scan"] = "SCANNING"
@@ -491,9 +497,10 @@ def execute(source, output):
                 report_sha256=verified_hash(report_path),
             )
             if decision["status"] == "BLOCK":
-                result["decision"] = "BLOCK"
-                rc = 10
-                break
+                blocked = True
+        if blocked:
+            result["decision"] = "BLOCK"
+            rc = 10
         else:
             result["decision"] = "PASS_CANDIDATE_ONLY"
             rc = 0
