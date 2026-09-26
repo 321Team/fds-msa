@@ -28,7 +28,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Static and application tests in pinned Python 3.13 builder
+      - name: Static source checks
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir PyYAML==6.0.2
+          python3 tools/check_source.py
+          python3 tools/check_dependency_locks.py
+          python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+
+      - name: Application tests in pinned Python 3.13 builder
         env:
           PY313_BUILDER: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
         run: |
@@ -39,10 +47,6 @@ jobs:
             -e PIP_CONFIG_FILE=/dev/null \
             -v "$PWD:/src" -w /src \
             "$PY313_BUILDER" sh -euxc '
-              python -m pip install --disable-pip-version-check --no-cache-dir PyYAML==6.0.2
-              python tools/check_source.py
-              python tools/check_dependency_locks.py
-              python -m unittest discover -s tools/tests -p "test_*.py" -v
               for service in transaction-api fds-engine; do
                 venv="/tmp/$service-venv"
                 wheelhouse="/tmp/$service-wheels"
