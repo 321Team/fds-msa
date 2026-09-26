@@ -5,6 +5,7 @@ contents:
     - https://packages.wolfi.dev/os
   packages:
     - wolfi-baselayout
+    - busybox
     - ca-certificates-bundle
     - python-3.13
     - py3.13-pip
