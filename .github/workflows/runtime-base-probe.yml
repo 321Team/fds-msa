@@ -30,6 +30,8 @@ jobs:
             image: docker.io/library/python:3.13-alpine
           - id: python-313-slim-trixie-pinned
             image: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+          - id: redhat-hi-python-313
+            image: registry.access.redhat.com/hi/python:3.13
 
     steps:
       - name: Checkout exact probe source without persisted credentials
