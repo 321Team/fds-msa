@@ -98,6 +98,7 @@ jobs:
           FROM ${RUNTIME_IMAGE}
           ENV PYTHONDONTWRITEBYTECODE=1 \
               PYTHONUNBUFFERED=1 \
+              LD_LIBRARY_PATH=/usr/local/lib \
               PATH=/venv/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin
           WORKDIR /app
           COPY --from=build /usr/local /usr/local
