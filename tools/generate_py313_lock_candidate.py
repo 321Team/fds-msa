@@ -58,7 +58,7 @@ def parse_lock(path: Path) -> list[dict[str, str]]:
         if normalize(row["name"]) == "asyncpg":
             if "transaction-api" not in path.parts:
                 raise ValueError(f"{path}:{number}: asyncpg outside transaction-api")
-            if row["version"] != "0.29.0":
+            if row["version"] not in {"0.29.0", "0.30.0"}:
                 raise ValueError(f"{path}:{number}: unexpected asyncpg source version")
             row["version"] = "0.30.0"
         rows.append(row)
@@ -88,7 +88,7 @@ def generate(source: Path, output: Path) -> None:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "policy": {
             "source_lock_versions_preserved": True,
-            "explicit_delta": {"transaction-api:asyncpg": "0.29.0 -> 0.30.0"},
+            "target_delta": {"transaction-api:asyncpg": "0.30.0 (0.29.0 source is upgraded; 0.30.0 is stable on rerun)"},
             "binary_only": True,
             "no_deps_per_download": True,
             "delivery_authorization": False,
