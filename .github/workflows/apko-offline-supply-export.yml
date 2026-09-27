@@ -1,0 +1,238 @@
+name: apko offline supply export
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/apko-offline-supply-export.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apko-offline-supply-export-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  export:
+    if: github.repository == '321Team/fds-msa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: 1c7f3651504097096c3a3fe4a86ac1973e169688
+      SOURCE_TREE_SHA: 65a4e3ef2d8fafa9e7ac2d22c7b4ec804145b4a7
+      REVIEWED_HEAD: 0bea0d4fa8ece5ecbf7aa5fd8f054fc24f5556cf
+      APKO_VERSION: "1.4.4"
+      APKO_ARCHIVE_SHA: dbd9e8f416903b2d896497c51f3217259d03ecb45c997254cedca5274e8671db
+      BUILDER_CONFIG_SHA: 6b194cf183d18170ff64dbb3ce59042b76960d2be09920e64b1472dbd13e429e
+      BUILDER_LOCK_SHA: 544b4a4aeba2b9a3d138f358780e1b7c2a2ff711ffc55101628a6bfaa977fbf6
+      RUNTIME_CONFIG_SHA: dc32de753d5b78501fc4654f79f17a285a0d523aaf6f28e6cfcad9ab2cc8c070
+      RUNTIME_LOCK_SHA: fbbbdd2231c510b763be4562e8a2fa2a1d2a7fc8f608c3759443cdbb291a65f0
+      BUILDER_CONFIG_DIGEST: sha256:ad5a142a8ee110d5fca77471fa5a9474b66605b1697627f4f8622dacd664f7c3
+      BUILDER_DIFF_ID: sha256:50dff28c9c203213c507fe0932a931111617bc598de53fc081ad6ff52e47e2d5
+      RUNTIME_CONFIG_DIGEST: sha256:34bb173ec648d3bedb2b8c17e4335e4e171210d1ec284daaf175b45240c48279
+      RUNTIME_DIFF_ID: sha256:90237ce13e8427bb536754beccaebce271758929d0ab4b8041e7578a6daf6ff0
+
+    steps:
+      - name: Checkout exact merged application source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Verify reviewed source equivalence and pinned inputs
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "$BUILDER_CONFIG_SHA  ci/apko/wolfi-python313-builder.apko.yaml" | sha256sum --check -
+          echo "$BUILDER_LOCK_SHA  ci/apko/wolfi-python313-builder.apko.lock.json" | sha256sum --check -
+          echo "$RUNTIME_CONFIG_SHA  ci/apko/wolfi-python313-runtime.apko.yaml" | sha256sum --check -
+          echo "$RUNTIME_LOCK_SHA  ci/apko/wolfi-python313-runtime.apko.lock.json" | sha256sum --check -
+          printf 'SOURCE_SHA=%s\nSOURCE_TREE_SHA=%s\nREVIEWED_HEAD=%s\n' \
+            "$SOURCE_SHA" "$SOURCE_TREE_SHA" "$REVIEWED_HEAD"
+
+      - name: Build reproducible builder and runtime OCI archives
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/apko-offline-supply"
+          work="$root/work"
+          evidence="$root/evidence"
+          supply="$root/supply"
+          mkdir -p "$work" "$evidence/builder-sbom" "$evidence/runtime-sbom" "$supply"
+
+          archive="$work/apko.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz"
+          echo "$APKO_ARCHIVE_SHA  $archive" | sha256sum --check -
+          tar -xzf "$archive" -C "$work"
+          mapfile -t apko_bins < <(find "$work" -maxdepth 3 -type f -name apko -perm -u+x -print)
+          test "${#apko_bins[@]}" -eq 1
+          apko="${apko_bins[0]}"
+          "$apko" version | tee "$evidence/apko-version.txt"
+          sha256sum "$archive" "$apko" > "$evidence/apko-tool-SHA256SUMS"
+
+          build_twice() {
+            role="$1"
+            cfg="$2"
+            lock="$3"
+            tag="$4"
+            sbom="$5"
+            first="$work/$role-1.tar"
+            second="$work/$role-2.tar"
+            "$apko" build --arch=amd64 --lockfile="$lock" \
+              --sbom-formats=spdx --sbom-path="$sbom" \
+              "$cfg" "$tag" "$first"
+            "$apko" build --arch=amd64 --lockfile="$lock" --sbom=false \
+              "$cfg" "$tag" "$second"
+            sha256sum "$first" "$second" > "$evidence/$role-reproducibility-SHA256SUMS"
+            cmp -s "$first" "$second"
+            cp "$first" "$supply/$role.oci.tar"
+            echo "APKO_EXPORT_REPRODUCIBLE_${role}=PASS"
+          }
+
+          build_twice builder \
+            ci/apko/wolfi-python313-builder.apko.yaml \
+            ci/apko/wolfi-python313-builder.apko.lock.json \
+            "fds-apko-wolfi-builder:$SOURCE_SHA" \
+            "$evidence/builder-sbom"
+
+          build_twice runtime \
+            ci/apko/wolfi-python313-runtime.apko.yaml \
+            ci/apko/wolfi-python313-runtime.apko.lock.json \
+            "fds-apko-wolfi-runtime:$SOURCE_SHA" \
+            "$evidence/runtime-sbom"
+
+      - name: Verify OCI identities against reviewed candidate
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/apko-offline-supply"
+          supply="$root/supply"
+          evidence="$root/evidence"
+          builder_ref="$(docker load -i "$supply/builder.oci.tar" | sed -n 's/^Loaded image: //p' | head -1)"
+          runtime_ref="$(docker load -i "$supply/runtime.oci.tar" | sed -n 's/^Loaded image: //p' | head -1)"
+          test -n "$builder_ref"
+          test -n "$runtime_ref"
+          docker image inspect "$builder_ref" > "$evidence/builder-docker-inspect.json"
+          docker image inspect "$runtime_ref" > "$evidence/runtime-docker-inspect.json"
+
+          python3 - "$evidence/builder-docker-inspect.json" "$evidence/runtime-docker-inspect.json" <<'PY'
+          import json, os, sys
+          builder = json.load(open(sys.argv[1]))[0]
+          runtime = json.load(open(sys.argv[2]))[0]
+          assert builder["Id"] == os.environ["BUILDER_CONFIG_DIGEST"], builder["Id"]
+          assert builder["RootFS"]["Layers"] == [os.environ["BUILDER_DIFF_ID"]]
+          assert builder["Architecture"] == "amd64" and builder["Os"] == "linux"
+          assert runtime["Id"] == os.environ["RUNTIME_CONFIG_DIGEST"], runtime["Id"]
+          assert runtime["RootFS"]["Layers"] == [os.environ["RUNTIME_DIFF_ID"]]
+          assert runtime["Architecture"] == "amd64" and runtime["Os"] == "linux"
+          assert runtime["Config"]["User"] == "10001", runtime["Config"]["User"]
+          print("CANDIDATE_CONFIG_AND_DIFFID_MATCH=PASS")
+          PY
+
+          docker run --rm --network none --entrypoint python3.13 "$builder_ref" \
+            -c 'import sys; assert sys.version_info[:2] == (3,13); print(sys.version)'
+          docker run --rm --network none --entrypoint python3.13 "$runtime_ref" \
+            -c 'import os,sys; assert sys.version_info[:2] == (3,13); assert os.getuid()==10001; assert os.getgid()==999; print("RUNTIME_UID_GID=10001:999")'
+
+      - name: Produce restricted OCI supply receipt
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/apko-offline-supply"
+          supply="$root/supply"
+          evidence="$root/evidence"
+
+          python3 - "$supply/builder.oci.tar" "$supply/runtime.oci.tar" "$evidence/SUPPLY_RECEIPT.json" <<'PY'
+          import hashlib, json, os, pathlib, sys, tarfile
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def read_json(archive, member):
+              stream = archive.extractfile(member)
+              assert stream is not None
+              return json.load(stream)
+
+          def inspect(path):
+              with tarfile.open(path, "r:") as archive:
+                  members = {m.name.rstrip("/") if m.isdir() else m.name: m for m in archive}
+                  assert read_json(archive, members["oci-layout"])["imageLayoutVersion"] == "1.0.0"
+                  index = read_json(archive, members["index.json"])
+                  manifests = index["manifests"]
+                  assert len(manifests) == 1
+                  manifest_desc = manifests[0]
+                  manifest_name = "blobs/sha256/" + manifest_desc["digest"].split(":", 1)[1]
+                  manifest = read_json(archive, members[manifest_name])
+                  config_desc = manifest["config"]
+                  config_name = "blobs/sha256/" + config_desc["digest"].split(":", 1)[1]
+                  config = read_json(archive, members[config_name])
+                  assert config["os"] == "linux" and config["architecture"] == "amd64"
+                  return {
+                      "archive_sha256": sha(path),
+                      "manifest_digest": manifest_desc["digest"],
+                      "config_digest": config_desc["digest"],
+                      "diff_ids": config["rootfs"]["diff_ids"],
+                      "platform": "linux/amd64",
+                  }
+
+          builder_path, runtime_path, out = sys.argv[1:]
+          builder = inspect(builder_path)
+          runtime = inspect(runtime_path)
+          assert builder["config_digest"] == os.environ["BUILDER_CONFIG_DIGEST"]
+          assert builder["diff_ids"] == [os.environ["BUILDER_DIFF_ID"]]
+          assert runtime["config_digest"] == os.environ["RUNTIME_CONFIG_DIGEST"]
+          assert runtime["diff_ids"] == [os.environ["RUNTIME_DIFF_ID"]]
+
+          receipt = {
+              "schema": "fds.apko-offline-supply.v1",
+              "scope": "SUPPLY_EXPORT_CANDIDATE_ONLY",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "source_tree_sha": os.environ["SOURCE_TREE_SHA"],
+              "reviewed_head": os.environ["REVIEWED_HEAD"],
+              "workflow_event_sha": os.environ.get("GITHUB_SHA"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "apko": {
+                  "version": os.environ["APKO_VERSION"],
+                  "release_archive_sha256": os.environ["APKO_ARCHIVE_SHA"],
+              },
+              "source_inputs": {
+                  "ci/apko/wolfi-python313-builder.apko.yaml": os.environ["BUILDER_CONFIG_SHA"],
+                  "ci/apko/wolfi-python313-builder.apko.lock.json": os.environ["BUILDER_LOCK_SHA"],
+                  "ci/apko/wolfi-python313-runtime.apko.yaml": os.environ["RUNTIME_CONFIG_SHA"],
+                  "ci/apko/wolfi-python313-runtime.apko.lock.json": os.environ["RUNTIME_LOCK_SHA"],
+              },
+              "images": {"builder": builder, "runtime": runtime},
+              "harbor_push": "NOT_EXECUTED",
+              "kubernetes_deploy": "NOT_EXECUTED",
+              "delivery_authorization": False,
+          }
+          pathlib.Path(out).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+
+          (
+            cd "$root"
+            find evidence supply -type f ! -name SHA256SUMS -print0 \
+              | sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Preserve exact offline base supply
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: apko-offline-supply-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/apko-offline-supply/supply/
+            ${{ runner.temp }}/apko-offline-supply/evidence/
+            ${{ runner.temp }}/apko-offline-supply/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
