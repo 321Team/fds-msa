@@ -2,7 +2,9 @@ name: Source validation
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - fix/trivy-app-remediation-20260924
   push:
     branches: [main]
   workflow_dispatch:
@@ -18,21 +20,81 @@ jobs:
   validate:
     if: github.repository == '321Team/fds-msa'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout source without persisting credentials
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # inherited pin from infra-cicd
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Static source checks
         run: |
-          python3 -m pip install PyYAML==6.0.2
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir PyYAML==6.0.2
           python3 tools/check_source.py
-      - name: Application unit and contract smoke tests
+          python3 tools/check_dependency_locks.py
+          python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+
+      - name: Application tests in pinned Python 3.13 builder
+        env:
+          PY313_BUILDER: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
         run: |
           set -euo pipefail
-          for service in transaction-api fds-engine; do
-            python3 -m venv "$RUNNER_TEMP/$service-venv"
-            "$RUNNER_TEMP/$service-venv/bin/python" -m pip install -r "$service/requirements-test.txt"
-            (cd "$service" && "$RUNNER_TEMP/$service-venv/bin/python" -m pytest -q)
-          done
+          docker pull --platform linux/amd64 "$PY313_BUILDER"
+          docker run --rm --platform linux/amd64 \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PIP_CONFIG_FILE=/dev/null \
+            -v "$PWD:/src" -w /src \
+            "$PY313_BUILDER" sh -euxc '
+              for service in transaction-api fds-engine; do
+                venv="/tmp/$service-venv"
+                wheelhouse="/tmp/$service-wheels"
+                python -m venv "$venv"
+                mkdir "$wheelhouse"
+                "$venv/bin/python" -I -m pip --isolated --disable-pip-version-check --no-cache-dir download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$service/requirements-test.lock" --dest "$wheelhouse"
+                "$venv/bin/python" -I -m pip --isolated --disable-pip-version-check --no-cache-dir install --no-index --find-links="$wheelhouse" --only-binary=:all: --require-hashes -r "$service/requirements-test.lock"
+                "$venv/bin/python" -I -m pip --isolated --disable-pip-version-check check
+                (cd "$service" && "$venv/bin/python" -m pytest -q -p no:cacheprovider)
+              done
+            '
+          git diff --exit-code
+
+  candidate-images:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.number == 7
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Build and scan candidate images without delivery
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/candidate_image_validation.py "$RUNNER_TEMP/candidate-evidence"
+      - name: Independently verify preserved evidence after the driver exits
+        if: always()
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate-evidence"
+          sha256sum --check SHA256SUMS
+          if test -f DB_SHA256SUMS; then sha256sum --check DB_SHA256SUMS; fi
+      - name: Preserve raw candidate evidence including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-images-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate-images-apko:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && startsWith(github.event.pull_request.head.ref, 'app/distroless-py313-')
+    needs: validate
+    uses: ./.github/workflows/apko-wolfi-py313.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha }}
+

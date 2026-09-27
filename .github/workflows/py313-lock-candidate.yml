@@ -1,0 +1,72 @@
+name: Python 3.13 lock candidate
+
+on:
+  pull_request:
+    branches:
+      - main
+      - fix/trivy-app-remediation-20260924
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: py313-lock-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-locks:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && github.event.pull_request.head.ref == 'app/distroless-py313-20260926'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve Python 3.13 builder and distroless runtime identities
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/py313-lock-candidate"
+          mkdir -p "$out"
+          docker pull --platform linux/amd64 python:3.13-slim-trixie
+          docker pull --platform linux/amd64 gcr.io/distroless/python3-debian13:nonroot
+          docker image inspect python:3.13-slim-trixie > "$out/builder-image-inspect.json"
+          docker image inspect gcr.io/distroless/python3-debian13:nonroot > "$out/runtime-image-inspect.json"
+          docker run --rm --platform linux/amd64 python:3.13-slim-trixie python -c 'import sys; assert sys.version_info[:2] == (3,13), sys.version; print(sys.version)' > "$out/builder-python.txt"
+          docker run --rm --platform linux/amd64 --entrypoint=/usr/bin/python gcr.io/distroless/python3-debian13:nonroot -c 'import sys; assert sys.version_info[:2] == (3,13), sys.version; print(sys.version)' > "$out/runtime-python.txt"
+
+      - name: Generate exact cp313 wheel hashes from pinned package set
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/py313-lock-candidate"
+          docker run --rm --platform linux/amd64 \
+            -e CANDIDATE_SHA="$CANDIDATE_SHA" \
+            -v "$PWD:/src:ro" \
+            -v "$out:/out" \
+            -w /src \
+            python:3.13-slim-trixie \
+            python /src/tools/generate_py313_lock_candidate.py /src /out
+          grep -F 'asyncpg==0.30.0 ' "$out/locks/transaction-api/requirements-runtime.lock"
+          grep -F 'asyncpg==0.30.0 ' "$out/locks/transaction-api/requirements-test.lock"
+
+      - name: Verify candidate artifact hashes independently
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/py313-lock-candidate"
+          sha256sum --check SHA256SUMS
+
+      - name: Preserve Python 3.13 candidate inputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: py313-lock-candidate-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/py313-lock-candidate/
+          if-no-files-found: error
+          retention-days: 7

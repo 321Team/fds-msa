@@ -1,0 +1,254 @@
+name: Red Hat Hardened Python 3.13 app candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redhat-hi-app-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-candidate:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BUILDER_IMAGE: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+      RUNTIME_IMAGE: registry.access.redhat.com/hi/python@sha256:a0ddd30e5599afd809fb1404b7867a6e0fc5540d762af6bbe4b0849bce42b7dd
+      RUNTIME_CONFIG: sha256:098bb5a00fefadf9f0b15090fef158f94004e0abe5a207b196211835d462faad
+      TRIVY_ARCHIVE_SHA: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+      TRIVY_BINARY_SHA: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build exact Red Hat runtime candidates and smoke
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+          root="$RUNNER_TEMP/redhat-hi-app-candidate"
+          evidence="$root/evidence"
+          work="$root/work"
+          mkdir -p "$evidence" "$work"
+
+          docker pull --platform linux/amd64 "$BUILDER_IMAGE"
+          docker pull --platform linux/amd64 "$RUNTIME_IMAGE"
+          docker image inspect "$BUILDER_IMAGE" > "$evidence/builder-inspect.json"
+          docker image inspect "$RUNTIME_IMAGE" > "$evidence/runtime-inspect.json"
+
+          python3 - "$evidence/runtime-inspect.json" "$RUNTIME_CONFIG" <<'PY'
+          import json
+          import sys
+
+          path, expected = sys.argv[1:]
+          image = json.load(open(path))[0]
+          assert image["Id"] == expected, (image["Id"], expected)
+          assert image["Architecture"] == "amd64"
+          assert image["Os"] == "linux"
+          assert image["Config"]["User"] == "65532"
+          assert image["Config"]["Env"]
+          assert "PYTHON_VERSION=3.13.15" in image["Config"]["Env"]
+          print(image["RepoDigests"][0])
+          PY
+
+          docker run --rm --platform linux/amd64             --entrypoint python3.13             "$RUNTIME_IMAGE"             -c 'import sys; assert sys.version_info[:2] == (3,13), sys.version; print(sys.version)'             | tee "$evidence/runtime-python.txt"
+
+          for service in transaction-api fds-engine; do
+            wheels="$work/$service-wheels"
+            mkdir -p "$wheels"
+
+            docker run --rm --platform linux/amd64               -e PIP_CONFIG_FILE=/dev/null               -v "$PWD:/src:ro"               -v "$wheels:/wheels"               "$BUILDER_IMAGE"               python -I -m pip --isolated --disable-pip-version-check --no-cache-dir                 download --index-url https://pypi.org/simple                 --only-binary=:all: --require-hashes                 -r "/src/$service/requirements-runtime.lock"                 --dest /wheels
+
+            (
+              cd "$wheels"
+              sha256sum ./* > "$evidence/$service-wheel-SHA256SUMS"
+            )
+
+            dockerfile="$work/$service.Dockerfile"
+            cat > "$dockerfile" <<'EOF'
+          ARG RUNTIME_IMAGE
+          FROM ${RUNTIME_IMAGE}
+
+          USER 0
+          WORKDIR /app
+
+          RUN ["python3.13", "-m", "venv", "--copies", "/venv"]
+          COPY --from=python-wheels / /opt/wheels/
+          COPY requirements-runtime.lock .
+
+          RUN ["/venv/bin/python", "-I", "-m", "pip", "--isolated", "--disable-pip-version-check", "--no-cache-dir", "install", "--no-index", "--find-links=/opt/wheels", "--only-binary=:all:", "--require-hashes", "-r", "requirements-runtime.lock"]
+          RUN ["/venv/bin/python", "-I", "-m", "pip", "--isolated", "--disable-pip-version-check", "check"]
+          RUN ["/venv/bin/python", "-I", "-m", "pip", "--isolated", "--disable-pip-version-check", "uninstall", "-y", "pip", "setuptools"]
+
+          # Base probe showed only these two HIGH python packages.
+          # They are not application runtime dependencies; remove rather than ignore.
+          RUN ["python3.13", "-m", "pip", "uninstall", "-y", "msgpack", "setuptools"]
+          RUN ["python3.13", "-c", "import importlib.util,shutil; assert importlib.util.find_spec('msgpack') is None; assert importlib.util.find_spec('setuptools') is None; shutil.rmtree('/opt/wheels', ignore_errors=True)"]
+
+          COPY app ./app
+          COPY run.py .
+
+          ENV PYTHONDONTWRITEBYTECODE=1               PYTHONUNBUFFERED=1               PATH=/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+          USER 65532:65532
+          ENTRYPOINT ["/venv/bin/python"]
+          CMD ["run.py"]
+          EOF
+
+            tag="fds-redhat-hi-candidate/$service:$SOURCE_SHA"
+
+            docker buildx build               --platform linux/amd64               --network none               --pull=false               --no-cache               --load               --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE"               --build-context "python-wheels=$wheels"               --file "$dockerfile"               --tag "$tag"               "$service"               > "$evidence/$service-build.log" 2>&1
+
+            docker image inspect "$tag" > "$evidence/$service-inspect.json"
+
+            python3 - "$evidence/runtime-inspect.json" "$evidence/$service-inspect.json" <<'PY'
+          import json
+          import sys
+
+          runtime = json.load(open(sys.argv[1]))[0]
+          image = json.load(open(sys.argv[2]))[0]
+          assert image["Architecture"] == "amd64"
+          assert image["Os"] == "linux"
+          assert image["Config"]["User"] == "65532:65532"
+          assert image["Config"]["Entrypoint"] == ["/venv/bin/python"]
+          assert image["Config"]["Cmd"] == ["run.py"]
+          base = runtime["RootFS"]["Layers"]
+          assert image["RootFS"]["Layers"][:len(base)] == base
+          PY
+
+            docker run --rm --network none               --entrypoint python3.13               "$tag"               -c "import importlib.util; assert importlib.util.find_spec('msgpack') is None; assert importlib.util.find_spec('setuptools') is None; print('BASE_VULN_PACKAGES_REMOVED=PASS')"               | tee "$evidence/$service-base-prune.txt"
+
+            smoke='import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3;'
+            smoke+='import fastapi,starlette,pydantic_core,yaml,uvloop,httptools,watchfiles,websockets;'
+            smoke+='assert sys.version_info[:2]==(3,13),sys.version;'
+            smoke+="assert fastapi.__version__=='0.141.1';"
+            smoke+="assert starlette.__version__=='1.7.0';"
+            if [ "$service" = transaction-api ]; then
+              smoke+='import asyncpg;'
+              smoke+="assert asyncpg.__version__=='0.30.0';"
+            fi
+            smoke+='import importlib.util;'
+            smoke+="assert importlib.util.find_spec('pip') is None;"
+            smoke+="assert importlib.util.find_spec('setuptools') is None;"
+            smoke+="print('REDHAT_HI_RUNTIME_SMOKE=PASS')"
+
+            docker run --rm --network none               --entrypoint /venv/bin/python               "$tag" -c "$smoke"               | tee "$evidence/$service-runtime-smoke.txt"
+
+            docker save --output "$evidence/$service.docker.tar" "$tag"
+          done
+
+          cat > "$evidence/COVERAGE_BOUNDARY.txt" <<'EOF'
+          RESULT_SCOPE=CANDIDATE_ONLY
+          DELIVERY_AUTHORIZATION=false
+          BASE_VENDOR=Red Hat
+          BASE_IMAGE=registry.access.redhat.com/hi/python
+          BASE_STREAM=3.13
+          HARBOR_PUSH=NOT_EXECUTED
+          KUBERNETES_DEPLOY=NOT_EXECUTED
+          BASE_PROBE_FINDINGS_REMOVED=msgpack-1.1.2,setuptools-70.3.0
+          SUPPLY_CHAIN_ADOPTION=NOT_APPROVED
+          NOTE=Security/build/smoke PASS would only qualify this image as a candidate. Vendor/base-family adoption, Harbor mirroring, provenance/SBOM review and deployment approval remain separate.
+          EOF
+
+      - name: Scan exact saved candidate images
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/redhat-hi-app-candidate"
+          evidence="$root/evidence"
+          work="$root/trivy"
+          mkdir -p "$work"
+
+          release="$work/trivy.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2             --output "$release"             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo "$TRIVY_ARCHIVE_SHA  $release" | sha256sum --check -
+
+          tar -xzf "$release" -C "$work" trivy
+          echo "$TRIVY_BINARY_SHA  $work/trivy" | sha256sum --check -
+          chmod 0755 "$work/trivy"
+
+          cache="$work/cache"
+          mkdir -p "$cache"
+          printf '{}\n' > "$work/empty.yaml"
+          : > "$work/empty.ignore"
+
+          "$work/trivy" image             --cache-dir "$cache"             --config "$work/empty.yaml"             --db-repository ghcr.io/aquasecurity/trivy-db:2             --download-db-only             --skip-version-check             --no-progress             --timeout 5m
+
+          overall=0
+          for service in transaction-api fds-engine; do
+            report="$evidence/$service-report.json"
+            set +e
+            "$work/trivy" image               --input "$evidence/$service.docker.tar"               --cache-dir "$cache"               --config "$work/empty.yaml"               --ignorefile "$work/empty.ignore"               --ignore-unfixed=false               --scanners vuln               --pkg-types os,library               --list-all-pkgs               --skip-db-update               --skip-java-db-update               --offline-scan               --skip-version-check               --severity HIGH,CRITICAL               --exit-code 10               --format json               --output "$report"               --no-progress               --timeout 10m
+            rc=$?
+            set -e
+            case "$rc" in 0|10) ;; *) exit "$rc";; esac
+
+            SCAN_RC="$rc" SERVICE="$service" python3 - "$report" "$evidence/$service-summary.json" <<'PY'
+          import collections
+          import json
+          import os
+          import sys
+
+          report_path, summary_path = sys.argv[1:]
+          report = json.load(open(report_path))
+          rows = []
+          for result in report.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") in {"HIGH", "CRITICAL"}:
+                      rows.append({
+                          "id": vuln.get("VulnerabilityID"),
+                          "severity": vuln.get("Severity"),
+                          "package": vuln.get("PkgName"),
+                          "installed": vuln.get("InstalledVersion"),
+                          "fixed": vuln.get("FixedVersion") or "",
+                          "class": result.get("Class") or "",
+                          "type": result.get("Type") or "",
+                      })
+          counts = collections.Counter(row["severity"] for row in rows)
+          summary = {
+              "service": os.environ["SERVICE"],
+              "scan_rc": int(os.environ["SCAN_RC"]),
+              "counts": {"HIGH": counts["HIGH"], "CRITICAL": counts["CRITICAL"]},
+              "unique_cves": len({row["id"] for row in rows}),
+              "findings": rows,
+              "decision": "PASS_CANDIDATE_ONLY" if not rows else "BLOCK",
+              "delivery_authorization": False,
+              "supply_chain_adoption": "NOT_APPROVED",
+          }
+          with open(summary_path, "w") as handle:
+              json.dump(summary, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          print(json.dumps(summary, sort_keys=True))
+          PY
+            if [ "$rc" -eq 10 ]; then overall=10; fi
+          done
+
+          (
+            cd "$evidence"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0               | sort -z               | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+          exit "$overall"
+
+      - name: Preserve Red Hat candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: redhat-hi-app-candidate-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/redhat-hi-app-candidate/evidence/
+          if-no-files-found: error
+          retention-days: 7

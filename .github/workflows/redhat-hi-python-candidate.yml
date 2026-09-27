@@ -1,0 +1,334 @@
+name: Red Hat Hardened Python 3.13 app candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redhat-hi-python-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-candidate:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BUILDER_IMAGE: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+      RUNTIME_IMAGE: registry.access.redhat.com/hi/python@sha256:a0ddd30e5599afd809fb1404b7867a6e0fc5540d762af6bbe4b0849bce42b7dd
+      RUNTIME_CONFIG: sha256:098bb5a00fefadf9f0b15090fef158f94004e0abe5a207b196211835d462faad
+      TRIVY_ARCHIVE_SHA: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+      TRIVY_BINARY_SHA: d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build and smoke Red Hat Hardened candidates
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+          root="$RUNNER_TEMP/redhat-hi-python-candidate"
+          evidence="$root/evidence"
+          work="$root/work"
+          toolsdir="$work/tools"
+          mkdir -p "$evidence" "$work" "$toolsdir"
+
+          docker pull --platform linux/amd64 "$BUILDER_IMAGE"
+          docker pull --platform linux/amd64 "$RUNTIME_IMAGE"
+          docker image inspect "$BUILDER_IMAGE" > "$evidence/builder-inspect.json"
+          docker image inspect "$RUNTIME_IMAGE" > "$evidence/runtime-inspect.json"
+
+          python3 - "$evidence/runtime-inspect.json" "$RUNTIME_CONFIG" <<'PY'
+          import json
+          import sys
+          image = json.load(open(sys.argv[1]))[0]
+          expected = sys.argv[2]
+          assert image["Id"] == expected, (image["Id"], expected)
+          assert image["Architecture"] == "amd64"
+          assert image["Os"] == "linux"
+          assert image["Config"]["User"] == "65532"
+          assert image["Config"]["Env"] and "PYTHON_VERSION=3.13.15" in image["Config"]["Env"]
+          print(image["RepoDigests"][0])
+          PY
+
+          docker run --rm --network none --entrypoint python3.13 "$RUNTIME_IMAGE"             -c 'import sys; assert sys.version_info[:3] == (3,13,15), sys.version; print(sys.executable, sys.version)'             | tee "$evidence/runtime-python.txt"
+
+          docker run --rm --network none --entrypoint python3.13 "$RUNTIME_IMAGE"             -c 'import importlib.metadata as m; print("msgpack="+m.version("msgpack")); print("setuptools="+m.version("setuptools"))'             | tee "$evidence/base-language-packages.txt"
+
+          cat > "$toolsdir/remove_base_packages.py" <<'PY'
+          import importlib.metadata as metadata
+          import importlib.util
+          import os
+          from pathlib import Path
+
+          removed = []
+          for name in ("msgpack", "setuptools"):
+              dist = metadata.distribution(name)
+              files = list(dist.files or [])
+              for rel in sorted(files, key=lambda x: len(Path(str(x)).parts), reverse=True):
+                  path = Path(dist.locate_file(rel))
+                  try:
+                      if path.is_symlink() or path.is_file():
+                          path.unlink()
+                          removed.append(str(path))
+                  except FileNotFoundError:
+                      pass
+
+          # Remove known setuptools top-level leftovers that can be outside RECORD.
+          for root in [Path(p) for p in __import__("sys").path if "site-packages" in p or "dist-packages" in p]:
+              if not root.exists():
+                  continue
+              for pattern in ("msgpack*", "setuptools*", "pkg_resources*", "_distutils_hack*", "distutils-precedence.pth"):
+                  for path in root.glob(pattern):
+                      if path.is_symlink() or path.is_file():
+                          path.unlink(missing_ok=True)
+                      elif path.is_dir():
+                          import shutil
+                          shutil.rmtree(path)
+
+          assert importlib.util.find_spec("msgpack") is None
+          assert importlib.util.find_spec("setuptools") is None
+          for name in ("msgpack", "setuptools"):
+              try:
+                  metadata.version(name)
+              except metadata.PackageNotFoundError:
+                  pass
+              else:
+                  raise SystemExit(name + " metadata still present")
+
+          Path("/tmp/remove_base_packages.py").unlink(missing_ok=True)
+          print("BASE_VULNERABLE_LANGUAGE_PACKAGES_REMOVED=PASS")
+          PY
+
+          for service in transaction-api fds-engine; do
+            wheels="$work/$service-wheels"
+            mkdir -p "$wheels"
+
+            docker run --rm --platform linux/amd64               -e PIP_CONFIG_FILE=/dev/null               -v "$PWD:/src:ro"               -v "$wheels:/wheels"               "$BUILDER_IMAGE"               python -I -m pip --isolated --disable-pip-version-check --no-cache-dir                 download --index-url https://pypi.org/simple                 --only-binary=:all: --require-hashes                 -r "/src/$service/requirements-runtime.lock"                 --dest /wheels
+
+            (
+              cd "$wheels"
+              sha256sum ./* > "$evidence/$service-wheel-SHA256SUMS"
+            )
+
+            dockerfile="$work/$service.Dockerfile"
+            cat > "$dockerfile" <<'EOF'
+          ARG BUILDER_IMAGE
+          ARG RUNTIME_IMAGE
+
+          FROM ${BUILDER_IMAGE} AS build
+          WORKDIR /app
+          COPY --from=python-wheels / /opt/wheels/
+          COPY requirements-runtime.lock .
+          RUN mkdir -p /opt/app-python \
+              && PIP_CONFIG_FILE=/dev/null python -I -m pip --isolated --disable-pip-version-check --no-cache-dir install --target /opt/app-python --no-index --find-links=/opt/wheels --only-binary=:all: --require-hashes -r requirements-runtime.lock \
+              && PYTHONPATH=/opt/app-python PIP_CONFIG_FILE=/dev/null python -I -m pip --isolated --disable-pip-version-check check \
+              && rm -rf /opt/wheels
+
+          FROM ${RUNTIME_IMAGE}
+          USER 0
+          COPY --from=candidate-tools /remove_base_packages.py /tmp/remove_base_packages.py
+          RUN ["python3.13", "/tmp/remove_base_packages.py"]
+          ENV PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONUNBUFFERED=1 \
+              PYTHONNOUSERSITE=1 \
+              PYTHONPATH=/opt/app-python
+          WORKDIR /app
+          COPY --from=build /opt/app-python /opt/app-python
+          COPY app ./app
+          COPY run.py .
+          USER 65532:65532
+          ENTRYPOINT ["python3.13"]
+          CMD ["run.py"]
+          EOF
+
+            tag="fds-redhat-hi-candidate/$service:$SOURCE_SHA"
+            docker buildx build               --platform linux/amd64               --network none               --pull=false               --no-cache               --load               --build-arg "BUILDER_IMAGE=$BUILDER_IMAGE"               --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE"               --build-context "python-wheels=$wheels"               --build-context "candidate-tools=$toolsdir"               --file "$dockerfile"               --tag "$tag"               "$service"               > "$evidence/$service-build.log" 2>&1
+
+            docker image inspect "$tag" > "$evidence/$service-inspect.json"
+
+            python3 - "$evidence/runtime-inspect.json" "$evidence/$service-inspect.json" <<'PY'
+          import json
+          import sys
+          runtime = json.load(open(sys.argv[1]))[0]
+          image = json.load(open(sys.argv[2]))[0]
+          assert image["Architecture"] == "amd64"
+          assert image["Os"] == "linux"
+          assert image["Config"]["User"] == "65532:65532"
+          assert image["Config"]["Entrypoint"] == ["python3.13"]
+          assert image["Config"]["Cmd"] == ["run.py"]
+          base = runtime["RootFS"]["Layers"]
+          assert image["RootFS"]["Layers"][:len(base)] == base
+          PY
+
+            smoke='import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3;'
+            smoke+='import fastapi,starlette,pydantic_core,yaml,uvloop,httptools,watchfiles,websockets;'
+            smoke+='assert sys.version_info[:3]==(3,13,15),sys.version;'
+            smoke+="assert fastapi.__version__=='0.141.1';"
+            smoke+="assert starlette.__version__=='1.7.0';"
+            if [ "$service" = transaction-api ]; then
+              smoke+='import asyncpg;'
+              smoke+="assert asyncpg.__version__=='0.30.0';"
+            fi
+            smoke+='import importlib.util,importlib.metadata as md;'
+            smoke+="assert importlib.util.find_spec('msgpack') is None;"
+            smoke+="assert importlib.util.find_spec('setuptools') is None;"
+            smoke+="print('REDHAT_HI_IMPORT_SMOKE=PASS')"
+
+            docker run --rm --network none               --entrypoint python3.13               "$tag" -c "$smoke"               | tee "$evidence/$service-import-smoke.txt"
+
+            cid=""
+            if [ "$service" = transaction-api ]; then
+              cid="$(docker run -d --network none                 -e DATABASE_URL='postgresql+asyncpg://candidate:candidate@127.0.0.1:5432/candidate'                 -e FDS_ENGINE_URL='http://127.0.0.1:8001/evaluate'                 "$tag")"
+              port=8000
+            else
+              cid="$(docker run -d --network none "$tag")"
+              port=8001
+            fi
+
+            cleanup() {
+              docker rm -f "$cid" >/dev/null 2>&1 || true
+            }
+            trap cleanup EXIT
+
+            passed=0
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if docker exec "$cid" python3.13 -c                 "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:$port/livez', timeout=1); assert r.status == 200; print(r.read().decode())"                 > "$evidence/$service-livez.txt" 2>"$evidence/$service-livez.err"; then
+                passed=1
+                break
+              fi
+              sleep 1
+            done
+            docker logs "$cid" > "$evidence/$service-container.log" 2>&1 || true
+            test "$passed" -eq 1
+            cleanup
+            trap - EXIT
+            echo "REDHAT_HI_PROCESS_LIVEZ=PASS" >> "$evidence/$service-livez.txt"
+
+            docker save --output "$evidence/$service.docker.tar" "$tag"
+          done
+
+          cat > "$evidence/COVERAGE_BOUNDARY.txt" <<'EOF'
+          RESULT_SCOPE=CANDIDATE_ONLY
+          DELIVERY_AUTHORIZATION=false
+          HARBOR_PUSH=NOT_EXECUTED
+          KUBERNETES_DEPLOY=NOT_EXECUTED
+          BASE_RUNTIME=Red_Hat_Hardened_Python_3.13_exact_digest
+          BASE_REMOVALS=msgpack,setuptools
+          TRIVY_BASE_OS_FAMILY=none
+          RED_HAT_VENDOR_SBOM_CVE_REVIEW=NOT_VERIFIED
+          NOTE=Final-image Trivy result must be combined with Red Hat vendor SBOM/CVE review before production approval because Trivy reports OS family none for the hardened base.
+          EOF
+
+      - name: Scan exact saved candidate images
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/redhat-hi-python-candidate"
+          evidence="$root/evidence"
+          work="$root/trivy"
+          mkdir -p "$work"
+
+          release="$work/trivy.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2             --output "$release"             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo "$TRIVY_ARCHIVE_SHA  $release" | sha256sum --check -
+          tar -xzf "$release" -C "$work" trivy
+          echo "$TRIVY_BINARY_SHA  $work/trivy" | sha256sum --check -
+          chmod 0755 "$work/trivy"
+
+          cache="$work/cache"
+          mkdir -p "$cache"
+          printf '{}\n' > "$work/empty.yaml"
+          : > "$work/empty.ignore"
+
+          "$work/trivy" image             --cache-dir "$cache"             --config "$work/empty.yaml"             --db-repository ghcr.io/aquasecurity/trivy-db:2             --download-db-only             --skip-version-check             --no-progress             --timeout 5m
+
+          overall=0
+          for service in transaction-api fds-engine; do
+            report="$evidence/$service-report.json"
+            set +e
+            "$work/trivy" image               --input "$evidence/$service.docker.tar"               --cache-dir "$cache"               --config "$work/empty.yaml"               --ignorefile "$work/empty.ignore"               --ignore-unfixed=false               --scanners vuln               --pkg-types os,library               --list-all-pkgs               --skip-db-update               --skip-java-db-update               --offline-scan               --skip-version-check               --severity HIGH,CRITICAL               --exit-code 10               --format json               --output "$report"               --no-progress               --timeout 10m
+            rc=$?
+            set -e
+            case "$rc" in 0|10) ;; *) exit "$rc";; esac
+
+            SCAN_RC="$rc" SERVICE="$service" python3 - "$report" "$evidence/$service-summary.json" <<'PY'
+          import collections
+          import json
+          import os
+          import sys
+
+          report_path, summary_path = sys.argv[1:]
+          report = json.load(open(report_path))
+          rows = []
+          package_inventory = set()
+          for result in report.get("Results", []):
+              for pkg in result.get("Packages") or []:
+                  package_inventory.add((result.get("Type") or "", pkg.get("Name") or "", pkg.get("Version") or ""))
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") in {"HIGH", "CRITICAL"}:
+                      rows.append({
+                          "id": vuln.get("VulnerabilityID"),
+                          "severity": vuln.get("Severity"),
+                          "package": vuln.get("PkgName"),
+                          "installed": vuln.get("InstalledVersion"),
+                          "fixed": vuln.get("FixedVersion") or "",
+                          "class": result.get("Class") or "",
+                          "type": result.get("Type") or "",
+                      })
+
+          counts = collections.Counter(row["severity"] for row in rows)
+          inv_names = {name.lower().replace("_", "-") for _, name, _ in package_inventory}
+          assert "fastapi" in inv_names
+          assert "starlette" in inv_names
+          assert "msgpack" not in inv_names
+          assert "setuptools" not in inv_names
+
+          summary = {
+              "service": os.environ["SERVICE"],
+              "scan_rc": int(os.environ["SCAN_RC"]),
+              "counts": {"HIGH": counts["HIGH"], "CRITICAL": counts["CRITICAL"]},
+              "unique_cves": len({row["id"] for row in rows}),
+              "findings": rows,
+              "decision": "PASS_CANDIDATE_ONLY" if not rows else "BLOCK",
+              "delivery_authorization": False,
+              "red_hat_vendor_sbom_cve_review": "NOT_VERIFIED",
+              "trivy_base_os_family": report.get("Metadata", {}).get("OS", {}).get("Family") or "none",
+          }
+          with open(summary_path, "w") as handle:
+              json.dump(summary, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          print(json.dumps(summary, sort_keys=True))
+          PY
+
+            if [ "$rc" -eq 10 ]; then overall=10; fi
+          done
+
+          (
+            cd "$evidence"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0               | sort -z               | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+          exit "$overall"
+
+      - name: Preserve Red Hat Hardened candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: redhat-hi-python-candidate-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/redhat-hi-python-candidate/evidence/
+          if-no-files-found: error
+          retention-days: 7

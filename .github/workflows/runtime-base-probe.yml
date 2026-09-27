@@ -1,0 +1,155 @@
+name: Runtime base security probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-base-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: distroless-base-debian13
+            image: gcr.io/distroless/base-debian13:nonroot
+          - id: distroless-cc-debian13
+            image: gcr.io/distroless/cc-debian13:nonroot
+          - id: python-313-alpine
+            image: docker.io/library/python:3.13-alpine
+          - id: python-313-slim-trixie-pinned
+            image: docker.io/library/python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+          - id: redhat-hi-python-313
+            image: registry.access.redhat.com/hi/python:3.13
+
+    steps:
+      - name: Checkout exact probe source without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Pull, resolve and scan runtime base candidate
+        env:
+          CANDIDATE_ID: ${{ matrix.id }}
+          CANDIDATE_IMAGE: ${{ matrix.image }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/runtime-base-probe"
+          out="$root/$CANDIDATE_ID"
+          work="$root/work-$CANDIDATE_ID"
+          mkdir -p "$out" "$work"
+
+          printf '%s\n' "$SOURCE_SHA" > "$out/source-sha.txt"
+          printf '%s\n' "$CANDIDATE_IMAGE" > "$out/requested-image.txt"
+
+          docker pull --platform linux/amd64 "$CANDIDATE_IMAGE"
+          docker image inspect "$CANDIDATE_IMAGE" > "$out/image-inspect.json"
+
+          resolved="$(docker image inspect --format '{{index .RepoDigests 0}}' "$CANDIDATE_IMAGE")"
+          test -n "$resolved"
+          printf '%s\n' "$resolved" > "$out/resolved-image.txt"
+
+          release="$work/trivy.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2             --output "$release"             https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+
+          echo '2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  '"$release"             | sha256sum --check -
+
+          tar -xzf "$release" -C "$work" trivy
+          echo 'd89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791  '"$work/trivy"             | sha256sum --check -
+          chmod 0755 "$work/trivy"
+
+          cache="$work/cache"
+          mkdir -p "$cache"
+          printf '{}\n' > "$work/empty.yaml"
+          : > "$work/empty.ignore"
+
+          "$work/trivy" image             --cache-dir "$cache"             --config "$work/empty.yaml"             --db-repository ghcr.io/aquasecurity/trivy-db:2             --download-db-only             --skip-version-check             --no-progress             --timeout 5m
+
+          set +e
+          "$work/trivy" image             --cache-dir "$cache"             --config "$work/empty.yaml"             --ignorefile "$work/empty.ignore"             --ignore-unfixed=false             --scanners vuln             --pkg-types os,library             --list-all-pkgs             --skip-db-update             --skip-java-db-update             --offline-scan             --skip-version-check             --severity HIGH,CRITICAL             --exit-code 10             --format json             --output "$out/report.json"             --no-progress             --timeout 10m             "$resolved"
+          scan_rc=$?
+          set -e
+
+          case "$scan_rc" in
+            0|10) ;;
+            *) echo "unexpected Trivy rc=$scan_rc" >&2; exit "$scan_rc" ;;
+          esac
+
+          SCAN_RC="$scan_rc" python3 - "$out/report.json" "$out/summary.json" <<'PY'
+          import collections
+          import json
+          import os
+          import sys
+
+          report_path, summary_path = sys.argv[1:]
+          report = json.load(open(report_path))
+          rows = []
+          for result in report.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") in {"HIGH", "CRITICAL"}:
+                      rows.append({
+                          "id": vuln.get("VulnerabilityID"),
+                          "severity": vuln.get("Severity"),
+                          "package": vuln.get("PkgName"),
+                          "installed": vuln.get("InstalledVersion"),
+                          "fixed": vuln.get("FixedVersion") or "",
+                          "class": result.get("Class") or "",
+                          "type": result.get("Type") or "",
+                      })
+
+          counts = collections.Counter(row["severity"] for row in rows)
+          packages = collections.Counter(row["package"] for row in rows)
+          summary = {
+              "schema": "fds.runtime-base-probe.v1",
+              "scan_rc": int(os.environ["SCAN_RC"]),
+              "decision": "PASS_CANDIDATE_ONLY"
+                  if counts["HIGH"] == 0 and counts["CRITICAL"] == 0
+                  else "BLOCK",
+              "counts": {
+                  "HIGH": counts["HIGH"],
+                  "CRITICAL": counts["CRITICAL"],
+                  "TOTAL": len(rows),
+              },
+              "unique_cves": len({row["id"] for row in rows}),
+              "unfixed_findings": sum(1 for row in rows if not row["fixed"]),
+              "packages": dict(sorted(packages.items())),
+              "findings": rows,
+          }
+          with open(summary_path, "w") as handle:
+              json.dump(summary, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          print(json.dumps({
+              "decision": summary["decision"],
+              "counts": summary["counts"],
+              "unique_cves": summary["unique_cves"],
+              "unfixed_findings": summary["unfixed_findings"],
+              "packages": summary["packages"],
+          }, sort_keys=True))
+          PY
+
+          (
+            cd "$out"
+            sha256sum               source-sha.txt               requested-image.txt               resolved-image.txt               image-inspect.json               report.json               summary.json               > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Preserve base probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-base-probe-${{ matrix.id }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-base-probe/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 7

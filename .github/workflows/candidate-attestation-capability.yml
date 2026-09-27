@@ -1,0 +1,119 @@
+name: Candidate evidence attestation capability
+
+on:
+  pull_request:
+    branches:
+      - fix/trivy-app-remediation-20260924
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: candidate-attestation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.repository == '321Team/fds-msa' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == '321Team/fds-msa' && startsWith(github.event.pull_request.head.ref, 'app/distroless-py313-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify exact pinned attestation subjects
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+          mkdir -p "$RUNNER_TEMP/attestation-capability"
+          sha256sum \
+            ci/apko/wolfi-python313-builder.apko.lock.json \
+            ci/apko/wolfi-python313-runtime.apko.lock.json \
+            > "$RUNNER_TEMP/attestation-capability/SUBJECT_SHA256SUMS"
+          sha256sum --check "$RUNNER_TEMP/attestation-capability/SUBJECT_SHA256SUMS"
+
+      - name: Probe GitHub signed attestation capability
+        id: attest
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            ci/apko/wolfi-python313-builder.apko.lock.json
+            ci/apko/wolfi-python313-runtime.apko.lock.json
+          show-summary: false
+
+      - name: Record capability result
+        env:
+          ATTEST_OUTCOME: ${{ steps.attest.outcome }}
+          ATTEST_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTEST_URL: ${{ steps.attest.outputs.attestation-url }}
+          ATTEST_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          out="$RUNNER_TEMP/attestation-capability"
+          mkdir -p "$out"
+
+          if [ "$ATTEST_OUTCOME" = success ]; then
+            capability="AVAILABLE"
+          else
+            capability="UNAVAILABLE_OR_PLAN_BLOCKED"
+          fi
+
+          if [ -n "${ATTEST_BUNDLE:-}" ] && [ -f "$ATTEST_BUNDLE" ]; then
+            cp "$ATTEST_BUNDLE" "$out/attestation.bundle.json"
+          fi
+
+          python3 - "$out/result.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          payload = {
+              "schema": "fds.candidate-attestation-capability.v1",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "attest_action_commit": "1e69f48acb82d1966a394da916b4c1698aa569d6",
+              "scope": "PINNED_APKO_LOCKFILES_ONLY",
+              "attestation_step_outcome": os.environ["ATTEST_OUTCOME"],
+              "capability": "AVAILABLE" if os.environ["ATTEST_OUTCOME"] == "success" else "UNAVAILABLE_OR_PLAN_BLOCKED",
+              "attestation_id": os.environ.get("ATTEST_ID") or None,
+              "attestation_url": os.environ.get("ATTEST_URL") or None,
+              "final_image_attestation": "NOT_RUN",
+              "harbor_push": "NOT_EXECUTED",
+              "delivery_authorization": False,
+          }
+          with open(sys.argv[1], "w") as f:
+              json.dump(payload, f, indent=2, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(payload, sort_keys=True))
+          PY
+
+          (
+            cd "$out"
+            sha256sum ./* > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Preserve attestation capability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-attestation-capability-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/attestation-capability/
+          if-no-files-found: error
+          retention-days: 14
