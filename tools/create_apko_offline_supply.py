@@ -24,8 +24,8 @@ MODES = ("runtime", "test")
 LOCK_NAME = {"runtime": "requirements-runtime.lock", "test": "requirements-test.lock"}
 HEX = re.compile(r"[0-9a-f]{64}")
 LOCK_LINE = re.compile(
-    r"^(?P<name>[A-Za-z0-9_.-]+)(?P<extras>\\[[A-Za-z0-9_,.-]+\\])?=="
-    r"(?P<version>[^ ]+)\\s+--hash=sha256:(?P<hash>[0-9a-f]{64})$"
+    r"^(?P<name>[A-Za-z0-9_.-]+)(?P<extras>\[[A-Za-z0-9_,.-]+\])?=="
+    r"(?P<version>[^ ]+)\s+--hash=sha256:(?P<hash>[0-9a-f]{64})$"
 )
 
 
@@ -173,7 +173,7 @@ def parse_lock(path: Path) -> list[dict[str, str]]:
 def wheel_metadata(path: Path) -> tuple[str, str]:
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
-        metadata = [entry for entry in entries if re.fullmatch(r"[^/]+\\.dist-info/METADATA", entry.filename)]
+        metadata = [entry for entry in entries if re.fullmatch(r"[^/]+\.dist-info/METADATA", entry.filename)]
         if len(metadata) != 1:
             raise RuntimeError(f"{path}: one METADATA required")
         msg = BytesParser().parsebytes(archive.read(metadata[0]))
