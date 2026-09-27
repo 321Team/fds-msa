@@ -144,6 +144,13 @@ jobs:
           work="$root/work"
           supply="$root/supply"
 
+          echo "::group::builder OCI members"
+          tar -tf "$work/builder.oci.tar" | sed -n '1,40p'
+          echo "::endgroup::"
+          echo "::group::runtime OCI members"
+          tar -tf "$work/runtime.oci.tar" | sed -n '1,40p'
+          echo "::endgroup::"
+
           python3 tools/create_apko_offline_supply.py "$PWD" "$work" "$supply" "$SOURCE_SHA"
 
           (
