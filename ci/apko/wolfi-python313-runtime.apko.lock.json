@@ -215,7 +215,7 @@
       {
         "name": "ncurses",
         "url": "https://packages.wolfi.dev/os/x86_64/ncurses-6.6.20260926-r0.apk",
-        "version": "6.6.20260919-r0",
+        "version": "6.6.20260926-r0",
         "architecture": "x86_64",
         "signature": {
           "range": "",
