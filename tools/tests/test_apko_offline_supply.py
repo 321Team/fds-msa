@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 
-from tools.create_apko_offline_supply import normalize, oci_identity, parse_roots, wheel_metadata
+from tools.create_apko_offline_supply import image_archive_identity, normalize, parse_roots, wheel_metadata
 
 
 class OfflineSupplyTests(unittest.TestCase):
@@ -39,61 +39,46 @@ class OfflineSupplyTests(unittest.TestCase):
         self.assertEqual(wheel_metadata(wheel), ("example-pkg", "1.2.3"))
         self.assertEqual(normalize("Example_Pkg"), "example-pkg")
 
-    def test_oci_identity_binds_index_manifest_config_and_layers(self):
+    def test_image_archive_identity_binds_config_and_layer_diff_ids(self):
+        import gzip
         import hashlib
         config = {
             "architecture": "amd64",
             "os": "linux",
-            "rootfs": {"type": "layers", "diff_ids": ["sha256:" + "1" * 64]},
+            "rootfs": {"type": "layers", "diff_ids": []},
         }
+        layer_plain = b"layer bytes"
+        layer_raw = gzip.compress(layer_plain, mtime=0)
+        diff_id = "sha256:" + hashlib.sha256(layer_plain).hexdigest()
+        config["rootfs"]["diff_ids"] = [diff_id]
         config_raw = json.dumps(config, separators=(",", ":")).encode()
         config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
-        layer_raw = b"layer bytes"
-        layer_digest = "sha256:" + hashlib.sha256(layer_raw).hexdigest()
-        manifest = {
-            "schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "config": {
-                "mediaType": "application/vnd.oci.image.config.v1+json",
-                "digest": config_digest,
-                "size": len(config_raw),
-            },
-            "layers": [{
-                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-                "digest": layer_digest,
-                "size": len(layer_raw),
-            }],
-        }
+        layer_name = hashlib.sha256(layer_raw).hexdigest() + ".tar.gz"
+        manifest = [{
+            "Config": config_digest,
+            "RepoTags": ["fds-apko-wolfi:test"],
+            "Layers": [layer_name],
+        }]
         manifest_raw = json.dumps(manifest, separators=(",", ":")).encode()
-        manifest_digest = "sha256:" + hashlib.sha256(manifest_raw).hexdigest()
-        index = {
-            "schemaVersion": 2,
-            "manifests": [{
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "digest": manifest_digest,
-                "size": len(manifest_raw),
-                "platform": {"architecture": "amd64", "os": "linux"},
-            }],
-        }
-        index_raw = json.dumps(index, separators=(",", ":")).encode()
-        archive_path = self.root / "image.oci.tar"
+        index_raw = b'{"manifests":[]}'
+        archive_path = self.root / "image.tar"
         with tarfile.open(archive_path, "w") as archive:
             payloads = {
-                "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
+                config_digest: config_raw,
+                layer_name: layer_raw,
+                "manifest.json": manifest_raw,
                 "index.json": index_raw,
-                "blobs/sha256/" + manifest_digest[7:]: manifest_raw,
-                "blobs/sha256/" + config_digest[7:]: config_raw,
-                "blobs/sha256/" + layer_digest[7:]: layer_raw,
             }
             for name, value in payloads.items():
                 info = tarfile.TarInfo(name)
                 info.size = len(value)
                 archive.addfile(info, io.BytesIO(value))
-        identity = oci_identity(archive_path)
-        self.assertEqual(identity["manifest_digest"], manifest_digest)
+        identity = image_archive_identity(archive_path)
+        self.assertEqual(identity["format"], "docker-archive")
         self.assertEqual(identity["config_digest"], config_digest)
         self.assertEqual(identity["platform"], "linux/amd64")
         self.assertEqual(identity["layer_count"], 1)
+
 
 
 if __name__ == "__main__":
