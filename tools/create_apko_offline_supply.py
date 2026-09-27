@@ -284,6 +284,10 @@ def main() -> int:
     manifest = {
         "schema": "fds.apko-offline-supply.v1",
         "source": {"repository": "321Team/fds-msa", "commit": args.source_sha},
+        "supply_tool": {
+            "repository": "321Team/fds-msa",
+            "commit": os.environ.get("SUPPLY_TOOL_SHA", ""),
+        },
         "platform": "linux/amd64",
         "apko": {
             "version": os.environ.get("APKO_VERSION", ""),
@@ -303,6 +307,8 @@ def main() -> int:
     }
     if manifest["apko"]["version"] != "1.4.4" or not HEX.fullmatch(manifest["apko"]["release_archive_sha256"]):
         raise RuntimeError("approved apko version/archive hash environment required")
+    if not re.fullmatch(r"[0-9a-f]{40}", manifest["supply_tool"]["commit"]):
+        raise RuntimeError("exact supply tooling SHA environment required")
 
     manifest_path = output / "SUPPLY_MANIFEST.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
