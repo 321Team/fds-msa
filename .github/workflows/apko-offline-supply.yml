@@ -87,10 +87,11 @@ jobs:
           apko="${apko_bins[0]}"
           "$apko" version
 
-          builder_cfg="$source_dir/ci/apko/wolfi-python313-builder.apko.yaml"
-          runtime_cfg="$source_dir/ci/apko/wolfi-python313-runtime.apko.yaml"
-          builder_lock="$source_dir/ci/apko/wolfi-python313-builder.apko.lock.json"
-          runtime_lock="$source_dir/ci/apko/wolfi-python313-runtime.apko.lock.json"
+          cd "$source_dir"
+          builder_cfg="ci/apko/wolfi-python313-builder.apko.yaml"
+          runtime_cfg="ci/apko/wolfi-python313-runtime.apko.yaml"
+          builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
+          runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
 
           "$apko" lock "$builder_cfg" --output "$work/builder.generated.lock.json" --arch=amd64
           "$apko" lock "$runtime_cfg" --output "$work/runtime.generated.lock.json" --arch=amd64
