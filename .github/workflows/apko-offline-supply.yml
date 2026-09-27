@@ -1,0 +1,196 @@
+name: apko Wolfi Python 3.13 offline supply
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/apko-offline-supply.yml"
+      - "tools/create_apko_offline_supply.py"
+      - "tools/tests/test_apko_offline_supply.py"
+      - "ci/apko/**"
+      - "transaction-api/**"
+      - "fds-engine/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apko-offline-supply.yml"
+      - "tools/create_apko_offline_supply.py"
+      - "tools/tests/test_apko_offline_supply.py"
+      - "ci/apko/**"
+      - "transaction-api/**"
+      - "fds-engine/**"
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact source commit SHA to package
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apko-offline-supply-${{ github.event.pull_request.number || inputs.source_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  supply:
+    if: github.repository == '321Team/fds-msa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SUPPLY_TOOL_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_SHA: ${{ github.event.pull_request.base.sha || inputs.source_sha || github.sha }}
+      APKO_VERSION: "1.4.4"
+      APKO_ARCHIVE_SHA: dbd9e8f416903b2d896497c51f3217259d03ecb45c997254cedca5274e8671db
+
+    steps:
+      - name: Checkout exact source without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Validate source and supply tool
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SUPPLY_TOOL_SHA"
+          test -z "$(git status --porcelain)"
+          python3 -m unittest discover -s tools/tests -p 'test_apko_offline_supply.py' -v
+
+      - name: Checkout exact approved application source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || inputs.source_sha || github.sha }}
+          path: target-source
+
+      - name: Build reproducible repo-locked apko bases
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/apko-offline-supply"
+          work="$root/work"
+          source_dir="$GITHUB_WORKSPACE/target-source"
+          mkdir -p "$work"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$SOURCE_SHA"
+
+          archive="$work/apko.tar.gz"
+          curl -q --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://github.com/chainguard-dev/apko/releases/download/v${APKO_VERSION}/apko_${APKO_VERSION}_linux_amd64.tar.gz"
+          echo "$APKO_ARCHIVE_SHA  $archive" | sha256sum --check -
+          tar -xzf "$archive" -C "$work"
+          mapfile -t apko_bins < <(find "$work" -maxdepth 3 -type f -name apko -perm -u+x -print)
+          test "${#apko_bins[@]}" -eq 1
+          apko="${apko_bins[0]}"
+          "$apko" version
+
+          cd "$source_dir"
+          builder_cfg="ci/apko/wolfi-python313-builder.apko.yaml"
+          runtime_cfg="ci/apko/wolfi-python313-runtime.apko.yaml"
+          builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
+          runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
+
+          "$apko" lock "$builder_cfg" --output "$work/builder.generated.lock.json" --arch=amd64
+          "$apko" lock "$runtime_cfg" --output "$work/runtime.generated.lock.json" --arch=amd64
+          cmp "$builder_lock" "$work/builder.generated.lock.json"
+          cmp "$runtime_lock" "$work/runtime.generated.lock.json"
+
+          "$apko" build --arch=amd64 --lockfile="$builder_lock" --sbom=false \
+            "$builder_cfg" "fds-apko-wolfi-builder:$SOURCE_SHA" "$work/builder.oci.tar"
+          "$apko" build --arch=amd64 --lockfile="$builder_lock" --sbom=false \
+            "$builder_cfg" "fds-apko-wolfi-builder:$SOURCE_SHA" "$work/builder.second.oci.tar"
+          cmp "$work/builder.oci.tar" "$work/builder.second.oci.tar"
+
+          "$apko" build --arch=amd64 --lockfile="$runtime_lock" --sbom=false \
+            "$runtime_cfg" "fds-apko-wolfi-runtime:$SOURCE_SHA" "$work/runtime.oci.tar"
+          "$apko" build --arch=amd64 --lockfile="$runtime_lock" --sbom=false \
+            "$runtime_cfg" "fds-apko-wolfi-runtime:$SOURCE_SHA" "$work/runtime.second.oci.tar"
+          cmp "$work/runtime.oci.tar" "$work/runtime.second.oci.tar"
+
+          builder_ref="$(docker load -i "$work/builder.oci.tar" | sed -n 's/^Loaded image: //p' | head -1)"
+          runtime_ref="$(docker load -i "$work/runtime.oci.tar" | sed -n 's/^Loaded image: //p' | head -1)"
+          test -n "$builder_ref"
+          test -n "$runtime_ref"
+          printf '%s\n' "$builder_ref" > "$work/builder-ref"
+          printf '%s\n' "$runtime_ref" > "$work/runtime-ref"
+
+          docker run --rm --network none --entrypoint python3.13 "$runtime_ref" \
+            -c 'import os,sys; assert sys.version_info[:2] == (3,13); assert os.getuid() == 10001; assert os.getgid() == 999; print("RUNTIME_UID_GID=10001:999")'
+
+      - name: Resolve exact wheelhouses from source locks
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/apko-offline-supply"
+          work="$root/work"
+          source_dir="$GITHUB_WORKSPACE/target-source"
+          builder_ref="$(cat "$work/builder-ref")"
+
+          for service in transaction-api fds-engine; do
+            for mode in runtime test; do
+              target="$work/wheels/$service-$mode"
+              mkdir -p "$target"
+              docker run --rm --platform linux/amd64 \
+                -e PIP_CONFIG_FILE=/dev/null \
+                -v "$source_dir:/src:ro" \
+                -v "$target:/wheels" \
+                "$builder_ref" \
+                python3.13 -I -m pip --isolated --disable-pip-version-check --no-cache-dir \
+                  download --index-url https://pypi.org/simple \
+                  --only-binary=:all: --require-hashes \
+                  -r "/src/$service/requirements-$mode.lock" \
+                  --dest /wheels
+            done
+          done
+
+      - name: Create immutable on-prem supply bundle
+        run: |
+          set -euo pipefail
+          umask 077
+
+          root="$RUNNER_TEMP/apko-offline-supply"
+          work="$root/work"
+          supply="$root/supply"
+          source_dir="$GITHUB_WORKSPACE/target-source"
+
+          echo "::group::builder OCI members"
+          tar -tf "$work/builder.oci.tar" | sed -n '1,40p'
+          echo "::endgroup::"
+          echo "::group::runtime OCI members"
+          tar -tf "$work/runtime.oci.tar" | sed -n '1,40p'
+          echo "::endgroup::"
+
+          python3 tools/create_apko_offline_supply.py "$source_dir" "$work" "$supply" "$SOURCE_SHA"
+
+          (
+            cd "$supply"
+            sha256sum --check SHA256SUMS
+          )
+
+          python3 - "$supply/SUPPLY_MANIFEST.json" "$SOURCE_SHA" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          assert data["source"]["commit"] == sys.argv[2]
+          assert data["supply_tool"]["commit"] == __import__("os").environ["SUPPLY_TOOL_SHA"]
+          assert data["images"]["builder"]["platform"] == "linux/amd64"
+          assert data["images"]["runtime"]["platform"] == "linux/amd64"
+          assert data["policy"]["delivery_authorization"] is False
+          assert data["policy"]["high_critical_exception"] is False
+          assert data["policy"]["harbor_push"] == "NOT_EXECUTED"
+          assert data["policy"]["kubernetes_deploy"] == "NOT_EXECUTED"
+          print("OFFLINE_SUPPLY_CONTRACT=PASS")
+          PY
+
+          rm -f "$work/builder.second.oci.tar" "$work/runtime.second.oci.tar" "$work/apko.tar.gz"
+
+      - name: Preserve exact offline supply bytes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: apko-offline-supply-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/apko-offline-supply/supply/
+          if-no-files-found: error
+          retention-days: 7
