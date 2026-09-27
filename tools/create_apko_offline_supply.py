@@ -56,7 +56,7 @@ def copy_regular(source: Path, target: Path) -> None:
 def oci_identity(path: Path) -> dict[str, object]:
     """Verify an OCI archive's index -> manifest -> config bindings."""
     members: dict[str, bytes] = {}
-    with tarfile.open(path, "r:") as archive:
+    with tarfile.open(path, "r:*") as archive:
         seen = set()
         for member in archive:
             name = member.name.removeprefix("./")
@@ -73,12 +73,18 @@ def oci_identity(path: Path) -> dict[str, object]:
                     raise RuntimeError(f"cannot read OCI member: {name}")
                 members[name] = extracted.read()
 
-    if "index.json" not in members or "oci-layout" not in members:
-        raise RuntimeError("OCI index/layout missing")
-    layout = json.loads(members["oci-layout"])
+    index_names = [name for name in members if name.endswith("index.json")]
+    if len(index_names) != 1:
+        raise RuntimeError(f"exactly one OCI index required: {sorted(index_names)}")
+    index_name = index_names[0]
+    prefix = index_name[:-len("index.json")]
+    layout_name = prefix + "oci-layout"
+    if layout_name not in members:
+        raise RuntimeError(f"OCI layout missing for prefix {prefix!r}")
+    layout = json.loads(members[layout_name])
     if layout != {"imageLayoutVersion": "1.0.0"}:
         raise RuntimeError(f"unsupported OCI layout: {layout}")
-    index_raw = members["index.json"]
+    index_raw = members[index_name]
     index = json.loads(index_raw)
     manifests = index.get("manifests")
     if not isinstance(manifests, list) or len(manifests) != 1:
@@ -87,7 +93,7 @@ def oci_identity(path: Path) -> dict[str, object]:
     digest = desc.get("digest", "")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise RuntimeError("invalid OCI manifest digest")
-    manifest_key = "blobs/sha256/" + digest.split(":", 1)[1]
+    manifest_key = prefix + "blobs/sha256/" + digest.split(":", 1)[1]
     manifest_raw = members.get(manifest_key)
     if manifest_raw is None or "sha256:" + sha256_bytes(manifest_raw) != digest:
         raise RuntimeError("OCI manifest digest mismatch")
@@ -96,7 +102,7 @@ def oci_identity(path: Path) -> dict[str, object]:
     config_digest = config_desc.get("digest", "")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest):
         raise RuntimeError("invalid OCI config digest")
-    config_key = "blobs/sha256/" + config_digest.split(":", 1)[1]
+    config_key = prefix + "blobs/sha256/" + config_digest.split(":", 1)[1]
     config_raw = members.get(config_key)
     if config_raw is None or "sha256:" + sha256_bytes(config_raw) != config_digest:
         raise RuntimeError("OCI config digest mismatch")
@@ -110,7 +116,7 @@ def oci_identity(path: Path) -> dict[str, object]:
         ldigest = layer.get("digest", "")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", ldigest):
             raise RuntimeError("invalid OCI layer digest")
-        key = "blobs/sha256/" + ldigest.split(":", 1)[1]
+        key = prefix + "blobs/sha256/" + ldigest.split(":", 1)[1]
         raw = members.get(key)
         if raw is None or "sha256:" + sha256_bytes(raw) != ldigest:
             raise RuntimeError("OCI layer digest mismatch")
