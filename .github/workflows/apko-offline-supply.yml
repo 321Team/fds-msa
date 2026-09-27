@@ -39,7 +39,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      SOURCE_SHA: ${{ github.event.pull_request.head.sha || inputs.source_sha || github.sha }}
+      SUPPLY_TOOL_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_SHA: ${{ github.event.pull_request.base.sha || inputs.source_sha || github.sha }}
       APKO_VERSION: "1.4.4"
       APKO_ARCHIVE_SHA: dbd9e8f416903b2d896497c51f3217259d03ecb45c997254cedca5274e8671db
 
@@ -48,14 +49,21 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || inputs.source_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Validate source and supply tool
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SUPPLY_TOOL_SHA"
           test -z "$(git status --porcelain)"
           python3 -m unittest discover -s tools/tests -p 'test_apko_offline_supply.py' -v
+
+      - name: Checkout exact approved application source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || inputs.source_sha || github.sha }}
+          path: target-source
 
       - name: Build reproducible repo-locked apko bases
         run: |
@@ -64,7 +72,9 @@ jobs:
 
           root="$RUNNER_TEMP/apko-offline-supply"
           work="$root/work"
+          source_dir="$GITHUB_WORKSPACE/target-source"
           mkdir -p "$work"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$SOURCE_SHA"
 
           archive="$work/apko.tar.gz"
           curl -q --fail --location --proto '=https' --tlsv1.2 \
@@ -77,10 +87,10 @@ jobs:
           apko="${apko_bins[0]}"
           "$apko" version
 
-          builder_cfg="ci/apko/wolfi-python313-builder.apko.yaml"
-          runtime_cfg="ci/apko/wolfi-python313-runtime.apko.yaml"
-          builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
-          runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
+          builder_cfg="$source_dir/ci/apko/wolfi-python313-builder.apko.yaml"
+          runtime_cfg="$source_dir/ci/apko/wolfi-python313-runtime.apko.yaml"
+          builder_lock="$source_dir/ci/apko/wolfi-python313-builder.apko.lock.json"
+          runtime_lock="$source_dir/ci/apko/wolfi-python313-runtime.apko.lock.json"
 
           "$apko" lock "$builder_cfg" --output "$work/builder.generated.lock.json" --arch=amd64
           "$apko" lock "$runtime_cfg" --output "$work/runtime.generated.lock.json" --arch=amd64
@@ -116,6 +126,7 @@ jobs:
 
           root="$RUNNER_TEMP/apko-offline-supply"
           work="$root/work"
+          source_dir="$GITHUB_WORKSPACE/target-source"
           builder_ref="$(cat "$work/builder-ref")"
 
           for service in transaction-api fds-engine; do
@@ -124,7 +135,7 @@ jobs:
               mkdir -p "$target"
               docker run --rm --platform linux/amd64 \
                 -e PIP_CONFIG_FILE=/dev/null \
-                -v "$PWD:/src:ro" \
+                -v "$source_dir:/src:ro" \
                 -v "$target:/wheels" \
                 "$builder_ref" \
                 python3.13 -I -m pip --isolated --disable-pip-version-check --no-cache-dir \
@@ -143,6 +154,7 @@ jobs:
           root="$RUNNER_TEMP/apko-offline-supply"
           work="$root/work"
           supply="$root/supply"
+          source_dir="$GITHUB_WORKSPACE/target-source"
 
           echo "::group::builder OCI members"
           tar -tf "$work/builder.oci.tar" | sed -n '1,40p'
@@ -151,7 +163,7 @@ jobs:
           tar -tf "$work/runtime.oci.tar" | sed -n '1,40p'
           echo "::endgroup::"
 
-          python3 tools/create_apko_offline_supply.py "$PWD" "$work" "$supply" "$SOURCE_SHA"
+          python3 tools/create_apko_offline_supply.py "$source_dir" "$work" "$supply" "$SOURCE_SHA"
 
           (
             cd "$supply"
@@ -162,6 +174,7 @@ jobs:
           import json, sys
           data = json.load(open(sys.argv[1]))
           assert data["source"]["commit"] == sys.argv[2]
+          assert data["supply_tool"]["commit"] == __import__("os").environ["SUPPLY_TOOL_SHA"]
           assert data["images"]["builder"]["platform"] == "linux/amd64"
           assert data["images"]["runtime"]["platform"] == "linux/amd64"
           assert data["policy"]["delivery_authorization"] is False
