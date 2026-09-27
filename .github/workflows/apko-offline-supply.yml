@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain)"
-          python3 -m unittest tools.tests.test_apko_offline_supply -v
+          python3 -m unittest discover -s tools/tests -p 'test_apko_offline_supply.py' -v
 
       - name: Build reproducible repo-locked apko bases
         run: |
