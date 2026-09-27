@@ -71,7 +71,7 @@
 - 정본 발행 정책 §6의 `Actions 미실행 → 로컬 결과만 기록, CI PASS로 오인 표시 금지`를 신규 소스에 적용한다. §2.1의 동일 스크립트 로컬 보상 방식도 참고하되 WBS 전용 검사를 앱/PKI에 요구하지 않는다. 보상 검증은 실제 검사 실패·누락을 숨기는 면제가 아니다.
 - source-validation Workflow는 소스 정적 검사를 수행한다. 기존 [infra-cicd 소스 검사](https://github.com/321Team/infra-cicd/blob/90f2f37d9e1ab77252b50e80bca339cfef48bd51/.github/workflows/source-validation.yml)처럼 GitHub-hosted/읽기 전용/제한 시간/고정 checkout/credential 비보존을 사용한다. 정본 내부 Delivery는 Self-hosted Runner이고, 이 소스 검사와 별개다.
 - 새 저장소 CI가 0건이면 `CI=NOT RUN`이다. 로컬 검증은 STATIC 또는 MOCK/UNIT로 기록한다. 과거 원본 CI 성공은 원본 SHA/Run/Attempt의 이력이며 새 저장소 CI 성공이 아니다.
-- 로컬 검증은 저장소 루트에서 `python tools/check_source.py`, `python tools/verify_migration.py`를 실행하고 원본/대상 해시·mode·문서 링크를 확인한다. source checker는 Git 추적 파일을 대상으로 하므로 신규 파일도 검토 대상에 포함한다. 환경/의존성/명령/종료 코드/로그/시각을 함께 남긴다.
+- 로컬 검증은 저장소 루트에서 `python tools/check_source.py`를 실행한다. 이관 무결성(원본/대상 해시·mode)은 `python tools/verify_migration.py --rev d9f7bb0cf600bf18623dcae2769372d357dd594d`로 초기 이관 commit에 대해 확인하며, 작업 트리 기준 실행 결과를 이후 PR의 PASS/FAIL 근거로 쓰지 않는다. 문서 링크도 확인한다. source checker는 Git 추적 파일을 대상으로 하므로 신규 파일도 검토 대상에 포함한다. 환경/의존성/명령/종료 코드/로그/시각을 함께 남긴다.
 - 앱은 서비스별 격리 환경에서 기존 단위/계약 시험을, Monitoring은 각 셸 파일 구문 검사를 수행한다. PKI Linux 시험은 승인된 Linux 검증 환경에서 `python3 -m unittest discover -s tools/pki -p 'test_*.py' -v`로 실행한다. 실제 key/CSR 생성과 시연 스크립트 실행은 소스 검증에 포함하지 않는다.
 - 환경상 실행하지 못한 시험은 미실행으로 남긴다. 이번처럼 로직·프로파일·의존성 경로가 동일한 이관은 원본의 승인·시험 이력과 파일 동일성을 독립 검토자가 대조하여 제한 수용 여부를 명시한다. 이 문서가 그 수용·승인을 대신하지 않는다. 기능·경로·의존성 변경 시 관련 시험을 새로 수행한다.
 - 조직 Actions 허용, 신규 저장소의 중앙 Runner 접근, 배포 Secret/Token 제공은 이번 변경에 포함하지 않는다. 소스 CI 실행 허용을 중앙 Runner 등록 범위나 내부망 접근 확대로 해석하지 않는다.

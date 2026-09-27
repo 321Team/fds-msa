@@ -21,6 +21,6 @@
 
 ## 무결성 검증 및 다음 단계
 
-저장소 루트에서 `python tools/verify_migration.py`를 실행한다. 종료 0은 이관 파일의 hash 일치만 의미한다. `docs/VALIDATION.md`에서 구문·unit/mock 및 미실행 범위를 확인한다. 이 검증기는 초기 이관 commit에 대한 도구이며 이후 의도된 구현 변경을 옛 snapshot에 맞추라고 요구하는 영구 CI gate가 아니다.
+저장소 루트에서 `python tools/verify_migration.py --rev d9f7bb0cf600bf18623dcae2769372d357dd594d`(초기 이관 commit)를 실행한다. `--rev` 없이 실행하면 작업 트리를 읽으므로, 이관 이후 의도적으로 변경된 파일(예: `7a8f329`의 Dockerfile 2개)은 hash 불일치로 FAIL이 되며 이는 결함이 아니다. 종료 0은 이관 파일의 hash 일치만 의미한다. `docs/VALIDATION.md`에서 구문·unit/mock 및 미실행 범위를 확인한다. 이 검증기는 초기 이관 commit에 대한 도구이며 이후 의도된 구현 변경을 옛 snapshot에 맞추라고 요구하는 영구 CI gate가 아니다.
 
 독립 승인·병합 후 새 merge SHA를 고정하여 CI 소스·배포 키트·문서 참조 변경 PR을 준비한다. 원본 정리/삭제는 그 이후 별도 승인으로 처리한다. 전환 전에는 기존 승인 source pin이 계속 유효하다. 이번 이관은 Runtime 인수·업무 계약 승인·정본 발행·티켓 종결을 대체하지 않는다.

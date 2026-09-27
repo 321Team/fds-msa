@@ -21,7 +21,7 @@ GitHub 제공 ubuntu-24.04, contents:read, checkout credential 비보존, repo �
 
 실행 항목은 UTF-8/AST/YAML/JSON·제한 secret pattern, 앱 저장소의 기존 unit/contract smoke tests, PKI의 원본 CSR safety unit tests, Monitoring의 shell syntax다. 과거 CI를 복제한 것이 아니며 source CI의 성공을 Runtime 성공으로 표현하지 않는다.
 
-초기 이관 hash 검증은 `python tools/verify_migration.py`로 수행한다. 이후 구현 변경을 금지하는 영구 CI gate로 연결하지 않는다. source verifier는 실제 파일을 읽고 검사할 뿐 이관된 실행 도구/시연 스크립트를 실행하지 않는다.
+초기 이관 hash 검증은 `python tools/verify_migration.py --rev d9f7bb0cf600bf18623dcae2769372d357dd594d`로 수행한다. 이후 PR의 변경 검증은 해당 PR의 대조 기준(예: `docs/CICD_OFFLINE_HANDOFF_20260917.md`의 변경 6파일 대조)으로 한다. 이후 구현 변경을 금지하는 영구 CI gate로 연결하지 않는다. source verifier는 실제 파일을 읽고 검사할 뿐 이관된 실행 도구/시연 스크립트를 실행하지 않는다.
 
 원본 89개 중 88개는 byte-preserved, Grafana 참고본 1개만 기본 암호 placeholder 치환이다(세 저장소 합계). 본 저장소 해당 목록/차이는 manifest에서 확인한다. Runtime 증적·공개 CA 신뢰·source cutover는 별도다.
 
