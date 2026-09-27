@@ -125,7 +125,7 @@ jobs:
           image = json.load(open(sys.argv[1]))[0]
           assert image["Architecture"] == "amd64"
           assert image["Os"] == "linux"
-          assert image["Config"]["User"] == "65532", image["Config"]["User"]
+          assert image["Config"]["User"] == "10001", image["Config"]["User"]
           print("APKO_RUNTIME_USER=PASS", image["Config"]["User"])
           PY
 
@@ -192,7 +192,7 @@ jobs:
           print(json.dumps(summary, sort_keys=True))
           PY
 
-          docker run --rm --network none --entrypoint python3.13 "$runtime_loaded"             -c 'import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; print(sys.version); print("APKO_ZONEINFO_ASIA_SEOUL=PASS")'             | tee "$evidence/runtime-python-smoke.txt"
+          docker run --rm --network none --entrypoint python3.13 "$runtime_loaded"             -c 'import os,sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; assert os.getuid() == 10001, os.getuid(); assert os.getgid() == 999, os.getgid(); print(sys.version); print("APKO_ZONEINFO_ASIA_SEOUL=PASS"); print("APKO_RUNTIME_UID_GID=10001:999")'             | tee "$evidence/runtime-python-smoke.txt"
 
           printf '%s\n' "$builder_loaded" > "$work/builder-ref"
           printf '%s\n' "$runtime_loaded" > "$work/runtime-ref"
@@ -219,40 +219,27 @@ jobs:
               sha256sum ./* > "$evidence/$service-wheel-SHA256SUMS"
             )
 
-            dockerfile="$work/$service.Dockerfile"
-            cat > "$dockerfile" <<'EOF'
-          ARG BUILDER_BASE
-          ARG RUNTIME_BASE
-
-          FROM ${BUILDER_BASE} AS build
-          WORKDIR /app
-          RUN python3.13 -m venv --copies /venv
-          COPY --from=python-wheels / /opt/wheels/
-          COPY requirements-runtime.lock .
-          RUN PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check --no-cache-dir install --no-index --find-links=/opt/wheels --only-binary=:all: --require-hashes -r requirements-runtime.lock \
-              && PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check check \
-              && PIP_CONFIG_FILE=/dev/null /venv/bin/python -I -m pip --isolated --disable-pip-version-check uninstall -y pip setuptools \
-              && rm -rf /opt/wheels
-
-          FROM ${RUNTIME_BASE}
-          ENV PYTHONDONTWRITEBYTECODE=1 \
-              PYTHONUNBUFFERED=1
-          WORKDIR /app
-          COPY --from=build /venv /venv
-          COPY app ./app
-          COPY run.py .
-          USER 65532:65532
-          ENTRYPOINT ["/venv/bin/python3"]
-          CMD ["run.py"]
-          EOF
-
             tag="fds-apko-wolfi-candidate/$service:$SOURCE_SHA"
 
-            docker buildx build               --platform linux/amd64               --network none               --pull=false               --no-cache               --load               --build-arg "BUILDER_BASE=$builder_ref"               --build-arg "RUNTIME_BASE=$runtime_ref"               --build-context "python-wheels=$wheels"               --file "$dockerfile"               --tag "$tag"               "$service"               > "$evidence/$service-build.log" 2>&1
+            docker buildx build               --platform linux/amd64               --network none               --pull=false               --no-cache               --load               --build-arg "BUILDER_IMAGE=$builder_ref"               --build-arg "RUNTIME_IMAGE=$runtime_ref"               --build-context "python-wheels=$wheels"               --file "$service/Dockerfile"               --tag "$tag"               "$service"               > "$evidence/$service-build.log" 2>&1
 
             docker image inspect "$tag" > "$evidence/$service-inspect.json"
 
-            smoke='import sys,ssl,ctypes,zlib,bz2,lzma,sqlite3;'
+            python3 - "$evidence/$service-inspect.json" "$evidence/runtime-inspect.json" "$service" <<'PY'
+          import json, sys
+          image = json.load(open(sys.argv[1]))[0]
+          runtime = json.load(open(sys.argv[2]))[0]
+          service = sys.argv[3]
+          assert image["Config"]["User"] == "10001:999", (service, image["Config"]["User"])
+          assert image["Config"].get("Entrypoint") == ["/venv/bin/python3"], service
+          assert image["Config"].get("Cmd") == ["run.py"], service
+          base_layers = runtime["RootFS"]["Layers"]
+          assert image["RootFS"]["Layers"][:len(base_layers)] == base_layers, service
+          print(f"OPERATING_DOCKERFILE_IDENTITY=PASS service={service} user=10001:999")
+          PY
+
+            smoke='import os,sys,ssl,ctypes,zlib,bz2,lzma,sqlite3;'
+            smoke+='assert os.getuid()==10001,os.getuid();assert os.getgid()==999,os.getgid();'
             smoke+='from zoneinfo import ZoneInfo; assert ZoneInfo("Asia/Seoul").key=="Asia/Seoul";'
             smoke+='import fastapi,starlette,pydantic_core,yaml,uvloop,httptools,watchfiles,websockets;'
             smoke+='assert sys.version_info[:2]==(3,13),sys.version;'
@@ -422,7 +409,7 @@ jobs:
               "signed_attestation": "NOT_RUN",
               "harbor_push": "NOT_EXECUTED",
               "kubernetes_deploy": "NOT_EXECUTED",
-              "supply_chain_adoption": "NOT_APPROVED",
+              "supply_chain_adoption": "APPROVED_DEC_P1_IMG_01",
           }
 
           with open(evidence / "PROVENANCE.json", "w") as f:
@@ -437,8 +424,8 @@ jobs:
           SPDX_SBOM=GENERATED
           PROJECT_PROVENANCE_RECEIPT=GENERATED
           SIGNED_SLSA_ATTESTATION=NOT_RUN
-          SUPPLY_CHAIN_ADOPTION=NOT_APPROVED
-          OPERATING_DOCKERFILES=UNCHANGED
+          SUPPLY_CHAIN_ADOPTION=APPROVED_DEC_P1_IMG_01
+          OPERATING_DOCKERFILES=VALIDATED_THIS_RUN\n          SEC04_UID_GID=10001:999
           HARBOR_PUSH=NOT_EXECUTED
           KUBERNETES_DEPLOY=NOT_EXECUTED
           EOF

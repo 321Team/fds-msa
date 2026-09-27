@@ -11,13 +11,13 @@ contents:
 
 accounts:
   groups:
-    - groupname: nonroot
-      gid: 65532
+    - groupname: fdsapp
+      gid: 999
   users:
-    - username: nonroot
-      uid: 65532
-      gid: 65532
-  run-as: nonroot
+    - username: fdsapp
+      uid: 10001
+      gid: 999
+  run-as: fdsapp
 
 environment:
   PATH: /usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin

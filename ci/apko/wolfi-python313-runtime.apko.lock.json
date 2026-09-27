@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "ci/apko/wolfi-python313-runtime.apko.yaml",
-    "checksum": "sha256-nOL13Wybxl2ttgE5IL/8n1csAvtiIgqASzqqTxf0MzE="
+    "checksum": "sha256-3DLedT1beFAfxGVPefF6KFoNUjqvbyjmz8rZqyzIwHA="
   },
   "contents": {
     "keyring": [
