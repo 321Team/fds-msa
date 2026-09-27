@@ -78,8 +78,20 @@ jobs:
           if [ -f "$repo_builder_lock" ] || [ -f "$repo_runtime_lock" ]; then
             test -f "$repo_builder_lock"
             test -f "$repo_runtime_lock"
-            cmp -s "$repo_builder_lock" "$builder_lock"
-            cmp -s "$repo_runtime_lock" "$runtime_lock"
+            mismatch=0
+            if ! cmp -s "$repo_builder_lock" "$builder_lock"; then
+              echo "::group::APKO builder lock diff"
+              diff -u "$repo_builder_lock" "$builder_lock" || true
+              echo "::endgroup::"
+              mismatch=1
+            fi
+            if ! cmp -s "$repo_runtime_lock" "$runtime_lock"; then
+              echo "::group::APKO runtime lock diff"
+              diff -u "$repo_runtime_lock" "$runtime_lock" || true
+              echo "::endgroup::"
+              mismatch=1
+            fi
+            test "$mismatch" -eq 0
             echo "APKO_REPO_LOCKFILES_MATCH=PASS" | tee "$evidence/repo-lockfile-match.txt"
           else
             echo "APKO_REPO_LOCKFILES_MATCH=NOT_YET_PINNED" | tee "$evidence/repo-lockfile-match.txt"
