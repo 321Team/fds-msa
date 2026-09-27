@@ -163,16 +163,29 @@ jobs:
 
           def inspect(path):
               with tarfile.open(path, "r:") as archive:
-                  members = {m.name.rstrip("/") if m.isdir() else m.name: m for m in archive}
-                  assert read_json(archive, members["oci-layout"])["imageLayoutVersion"] == "1.0.0"
-                  index = read_json(archive, members["index.json"])
+                  entries = [(m.name.rstrip("/") if m.isdir() else m.name, m) for m in archive]
+                  members = dict(entries)
+                  assert len(members) == len(entries), "duplicate tar member"
+                  prefixes = []
+                  for name in members:
+                      if not name.endswith("oci-layout"):
+                          continue
+                      prefix = name[:-len("oci-layout")]
+                      if prefix and not prefix.endswith("/"):
+                          continue
+                      if prefix + "index.json" in members:
+                          prefixes.append(prefix)
+                  assert len(prefixes) == 1, prefixes
+                  prefix = prefixes[0]
+                  assert read_json(archive, members[prefix + "oci-layout"])["imageLayoutVersion"] == "1.0.0"
+                  index = read_json(archive, members[prefix + "index.json"])
                   manifests = index["manifests"]
                   assert len(manifests) == 1
                   manifest_desc = manifests[0]
-                  manifest_name = "blobs/sha256/" + manifest_desc["digest"].split(":", 1)[1]
+                  manifest_name = prefix + "blobs/sha256/" + manifest_desc["digest"].split(":", 1)[1]
                   manifest = read_json(archive, members[manifest_name])
                   config_desc = manifest["config"]
-                  config_name = "blobs/sha256/" + config_desc["digest"].split(":", 1)[1]
+                  config_name = prefix + "blobs/sha256/" + config_desc["digest"].split(":", 1)[1]
                   config = read_json(archive, members[config_name])
                   assert config["os"] == "linux" and config["architecture"] == "amd64"
                   return {
