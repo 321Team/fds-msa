@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from email.parser import BytesParser
+import gzip
 import hashlib
 import json
 import os
@@ -53,86 +54,80 @@ def copy_regular(source: Path, target: Path) -> None:
         shutil.copyfileobj(src, dst)
 
 
-def oci_identity(path: Path) -> dict[str, object]:
-    """Verify an OCI archive's index -> manifest -> config bindings."""
+def image_archive_identity(path: Path) -> dict[str, object]:
+    """Verify the Docker-loadable archive emitted by apko v1.4.4."""
     members: dict[str, bytes] = {}
     with tarfile.open(path, "r:*") as archive:
         seen = set()
         for member in archive:
             name = member.name.removeprefix("./")
             if name in seen:
-                raise RuntimeError(f"duplicate OCI member: {name}")
+                raise RuntimeError(f"duplicate image archive member: {name}")
             seen.add(name)
             if member.isdir():
                 continue
             if not member.isfile() or member.issym() or member.islnk():
-                raise RuntimeError(f"unsupported OCI member: {name}")
-            if name in {"index.json", "oci-layout"} or name.startswith("blobs/sha256/"):
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    raise RuntimeError(f"cannot read OCI member: {name}")
-                members[name] = extracted.read()
+                raise RuntimeError(f"unsupported image archive member: {name}")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise RuntimeError(f"cannot read image archive member: {name}")
+            members[name] = extracted.read()
 
-    index_names = [name for name in members if name.endswith("index.json")]
-    if len(index_names) != 1:
-        raise RuntimeError(f"exactly one OCI index required: {sorted(index_names)}")
-    index_name = index_names[0]
-    prefix = index_name[:-len("index.json")]
-    layout_name = prefix + "oci-layout"
-    if layout_name not in members:
-        raise RuntimeError(f"OCI layout missing for prefix {prefix!r}")
-    layout = json.loads(members[layout_name])
-    if layout != {"imageLayoutVersion": "1.0.0"}:
-        raise RuntimeError(f"unsupported OCI layout: {layout}")
-    index_raw = members[index_name]
-    index = json.loads(index_raw)
-    manifests = index.get("manifests")
-    if not isinstance(manifests, list) or len(manifests) != 1:
-        raise RuntimeError("exactly one OCI manifest required")
-    desc = manifests[0]
-    digest = desc.get("digest", "")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise RuntimeError("invalid OCI manifest digest")
-    manifest_key = prefix + "blobs/sha256/" + digest.split(":", 1)[1]
-    manifest_raw = members.get(manifest_key)
-    if manifest_raw is None or "sha256:" + sha256_bytes(manifest_raw) != digest:
-        raise RuntimeError("OCI manifest digest mismatch")
+    if "manifest.json" not in members or "index.json" not in members:
+        raise RuntimeError("apko Docker archive manifest/index missing")
+    manifest_raw = members["manifest.json"]
     manifest = json.loads(manifest_raw)
-    config_desc = manifest.get("config", {})
-    config_digest = config_desc.get("digest", "")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest):
-        raise RuntimeError("invalid OCI config digest")
-    config_key = prefix + "blobs/sha256/" + config_digest.split(":", 1)[1]
-    config_raw = members.get(config_key)
-    if config_raw is None or "sha256:" + sha256_bytes(config_raw) != config_digest:
-        raise RuntimeError("OCI config digest mismatch")
+    if not isinstance(manifest, list) or len(manifest) != 1 or not isinstance(manifest[0], dict):
+        raise RuntimeError("exactly one Docker archive manifest entry required")
+    row = manifest[0]
+    if set(row) != {"Config", "RepoTags", "Layers"}:
+        raise RuntimeError(f"unexpected Docker archive manifest fields: {sorted(row)}")
+    config_name = row["Config"]
+    repo_tags = row["RepoTags"]
+    layers = row["Layers"]
+    if not isinstance(config_name, str) or config_name not in members:
+        raise RuntimeError("Docker archive config missing")
+    if not isinstance(repo_tags, list) or len(repo_tags) != 1 or not all(isinstance(x, str) and x for x in repo_tags):
+        raise RuntimeError("exactly one Docker archive RepoTag required")
+    if not isinstance(layers, list) or not layers or not all(isinstance(x, str) and x in members for x in layers):
+        raise RuntimeError("Docker archive layers missing")
+
+    config_raw = members[config_name]
+    config_digest = "sha256:" + sha256_bytes(config_raw)
+    accepted_config_names = {config_digest, config_digest[7:] + ".json"}
+    if config_name not in accepted_config_names:
+        raise RuntimeError("Docker archive config filename/digest mismatch")
     config = json.loads(config_raw)
     if config.get("architecture") != "amd64" or config.get("os") != "linux":
-        raise RuntimeError("OCI platform must be linux/amd64")
-    layers = manifest.get("layers")
-    if not isinstance(layers, list) or not layers:
-        raise RuntimeError("OCI layers missing")
-    for layer in layers:
-        ldigest = layer.get("digest", "")
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", ldigest):
-            raise RuntimeError("invalid OCI layer digest")
-        key = prefix + "blobs/sha256/" + ldigest.split(":", 1)[1]
-        raw = members.get(key)
-        if raw is None or "sha256:" + sha256_bytes(raw) != ldigest:
-            raise RuntimeError("OCI layer digest mismatch")
-    diff_ids = config.get("rootfs", {}).get("diff_ids")
-    if not isinstance(diff_ids, list) or len(diff_ids) != len(layers):
-        raise RuntimeError("OCI diff_ids/layers mismatch")
+        raise RuntimeError("image platform must be linux/amd64")
+    rootfs = config.get("rootfs", {})
+    diff_ids = rootfs.get("diff_ids")
+    if rootfs.get("type") != "layers" or not isinstance(diff_ids, list) or len(diff_ids) != len(layers):
+        raise RuntimeError("Docker archive rootfs/layers mismatch")
+
+    for layer_name, diff_id in zip(layers, diff_ids):
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", diff_id):
+            raise RuntimeError("invalid image diff_id")
+        raw = members[layer_name]
+        try:
+            uncompressed = gzip.decompress(raw) if layer_name.endswith(".gz") else raw
+        except OSError as exc:
+            raise RuntimeError(f"invalid compressed layer: {layer_name}") from exc
+        if "sha256:" + sha256_bytes(uncompressed) != diff_id:
+            raise RuntimeError(f"layer diff_id mismatch: {layer_name}")
+
+    json.loads(members["index.json"])
     return {
+        "format": "docker-archive",
         "archive_sha256": sha256(path),
-        "index_digest": "sha256:" + sha256_bytes(index_raw),
-        "manifest_digest": digest,
+        "manifest_json_sha256": sha256_bytes(manifest_raw),
+        "index_json_sha256": sha256_bytes(members["index.json"]),
         "config_digest": config_digest,
         "diff_ids": diff_ids,
         "layer_count": len(layers),
+        "repo_tag": repo_tags[0],
         "platform": "linux/amd64",
     }
-
 
 def parse_roots(source: Path, service: str, mode: str) -> list[str]:
     runtime = (source / service / "requirements.txt").read_text(encoding="utf-8").splitlines()
@@ -260,7 +255,7 @@ def main() -> int:
         src = work / f"{label}.oci.tar"
         dest = output / f"{label}.oci.tar"
         copy_regular(src, dest)
-        images[label] = oci_identity(dest)
+        images[label] = image_archive_identity(dest)
 
     profiles = {}
     for service in SERVICES:
