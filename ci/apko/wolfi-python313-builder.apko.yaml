@@ -9,6 +9,7 @@ contents:
     - ca-certificates-bundle
     - python-3.13
     - py3.13-pip
+    - tzdata
 
 environment:
   PATH: /usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin

@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "ci/apko/wolfi-python313-builder.apko.yaml",
-    "checksum": "sha256-axlM8YPRgXD/ZNuzzlkEK3aWDSvgmSDmSxRy29E+Qp4="
+    "checksum": "sha256-wsDYHsSiD7BkF7ZsWh0aHASgaPHAx203o18sErqyZLI="
   },
   "contents": {
     "keyring": [
@@ -705,6 +705,25 @@
           "checksum": "sha256-dwH0OQ/rJmwmte8+yt7a51apfx8ih+Wq8XxjRUbJkcs="
         },
         "checksum": "Q1j8ZVHTcgrhTHDagFfqs++2uf5s0="
+      },
+      {
+        "name": "tzdata",
+        "url": "https://packages.wolfi.dev/os/x86_64/tzdata-2026d-r0.apk",
+        "version": "2026d-r0",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-5388",
+          "checksum": "sha1-nhfYdJ8pNjVoWbUEVACzajDekzE="
+        },
+        "data": {
+          "range": "bytes=5389-565282",
+          "checksum": "sha256-mHviOAVzUV7SJS4/7AUSMMUqC0ce7CLsTKyli+M3c/o="
+        },
+        "checksum": "Q1nhfYdJ8pNjVoWbUEVACzajDekzE="
       }
     ]
   }
