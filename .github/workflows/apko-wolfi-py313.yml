@@ -165,6 +165,7 @@ jobs:
           required_builder = {
               ("python-3.13", "3.13.15_git20260925-r0"),
               ("py3.13-pip", "26.2.1-r1"),
+              ("tzdata", "2026d-r0"),
           }
           required_runtime = {
               ("python-3.13", "3.13.15_git20260925-r0"),
@@ -203,6 +204,8 @@ jobs:
 
           print(json.dumps(summary, sort_keys=True))
           PY
+
+          docker run --rm --network none --entrypoint python3.13 "$builder_loaded"             -c 'import sys; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; print(sys.version); print("APKO_BUILDER_ZONEINFO_ASIA_SEOUL=PASS")'             | tee "$evidence/builder-python-smoke.txt"
 
           docker run --rm --network none --entrypoint python3.13 "$runtime_loaded"             -c 'import os,sys,ssl,ctypes,zlib,bz2,lzma,sqlite3; from zoneinfo import ZoneInfo; assert sys.version_info[:2] == (3,13), sys.version; assert ZoneInfo("Asia/Seoul").key == "Asia/Seoul"; assert os.getuid() == 10001, os.getuid(); assert os.getgid() == 999, os.getgid(); print(sys.version); print("APKO_ZONEINFO_ASIA_SEOUL=PASS"); print("APKO_RUNTIME_UID_GID=10001:999")'             | tee "$evidence/runtime-python-smoke.txt"
 
