@@ -302,4 +302,4 @@ jobs:
           name: wolfi-py313-candidate-${{ inputs.source_sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wolfi-py313-candidate/evidence/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
