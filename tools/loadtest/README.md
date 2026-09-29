@@ -6,26 +6,37 @@ P1-APP-01 [#15](https://github.com/321Team/fds-project-baseline/issues/15) 핵�
 
 ## 파일
 
-| 파일 | 실행 위치 | 역할 | SHA-256 |
-|---|---|---|---|
-| `gen2.py` | edge01 | 부하 생성 | `60f09400221775a015afc17fc69a2ed600dd73e786cb12216c8601ae768c2916` |
-| `q_range.py` | k8s-control01 | Prometheus 조회(읽기 전용) | `5b59d0d5d8205154b350377599645734f801154f1532681453a8cf27b65cfd85` |
-| `promql.txt` | k8s-control01 | `q_range.py`가 읽는 query·집계 규칙 | `deccc54929862a137de59ae8f4d32b62b23a4461a2de77249381eb19863d91a1` |
+| 파일 | 실행 위치 | 역할 |
+|---|---|---|
+| `gen3.py` | edge01 | 부하 생성. 실패하면 멈춘다(fail-close, 아래) |
+| `q_range.py` | k8s-control01 | Prometheus 조회(읽기 전용) |
+| `promql.txt` | k8s-control01 | `q_range.py`가 읽는 query·집계 규칙 |
+| `../tests/test_loadtest_gen.py` | CI | `gen3.py` selftest: 정상, 처리 용량 초과, 단계 끝 미완료, 오류 임계 |
 
-세 파일은 2026-09-29 RUN `202609291754`에서 실행한 파일과 바이트가 같다. 그 RUN은 이 리뷰를 거치지 않아 진단·이력 증적으로만 편입했다([fds-project-evidence#75](https://github.com/321Team/fds-project-evidence/pull/75)). 판정에 쓸 RUN은 이 PR 리뷰를 마친 뒤 새로 실행한다.
+`q_range.py`·`promql.txt`는 2026-09-29 RUN `202609291754`에서 실행한 파일과 바이트가 같다. 그 RUN의 생성기 `gen2.py`(SHA-256 `60f09400…768c2916`)는 대기 요청 수에 상한이 없어 이 저장소에 두지 않고 `gen3.py`로 바꿨다. 그 RUN은 사전 리뷰가 없어 진단·이력 증적으로만 편입했다([fds-project-evidence#75](https://github.com/321Team/fds-project-evidence/pull/75)). 판정에 쓸 RUN은 이 도구의 리뷰를 마친 뒤 새로 실행한다.
 
-## `gen2.py`
+## `gen3.py`
 
 ```
-python3 gen2.py <RUN> <OUT_DIR> > <OUT_DIR>/stages.log 2>&1
+python3 gen3.py <RUN> <OUT_DIR> > <OUT_DIR>/stages.log 2>&1
 ```
 
 - 대상: `10.1.93.105`, `10.1.93.107`, `10.1.93.108`의 `:30080`(NodePort)에 요청마다 순서대로 보낸다. `POST /api/v1/transactions`
-- 단계: B 20 rps 600초 → P 50 rps 180초 → 부하 없이 120초 관찰(총 21,000건). 값은 코드에 고정했다(결정안 v2 전용).
+- 단계: B 20 rps 600초 → P 50 rps 180초 → 부하 없이 120초 관찰(정상이면 21,000건). 값은 코드 상수로 고정했다(결정안 v2 전용).
 - 요청: 요청마다 새 계정 `SIM_load_<RUN>_<n>`, 입금 60·출금 20·이체 20%(시드 = RUN), 10,000원, `source_ip` 198.51.100.10(문서용 IP). R01/R02/R04/R07이 걸리지 않는 입력이다.
-- 동시성: 스레드 64개 상한, 요청마다 새 연결, timeout 10초. 예외는 상태 코드 `-1`로 기록한다.
-- 출력: `<OUT_DIR>/requests.log`(한 줄에 `시작epoch 단계 Worker 유형 상태코드 지연ms`), 표준 출력(단계 시작·끝 epoch, 30초마다 누적 상태 코드). 30초마다 로그를 디스크에 쓴다.
+- 연결: 요청마다 새 연결, timeout 10초. 예외는 상태 코드 `-1`로 기록한다.
+- 출력: `<OUT_DIR>/requests.log`(한 줄에 `시작epoch 단계 Worker 유형 상태코드 지연ms`), 표준 출력(`START`·`END`·`DRAINED`·`IDLE START`·`IDLE END` epoch, 30초마다 보낸 수·진행 중 요청 수·누적 상태 코드, 마지막 `DONE` 또는 `FAIL`). 30초마다 로그를 디스크에 쓴다.
 - 표준 라이브러리만 쓴다(Python 3.6 이상).
+
+**fail-close**
+
+| 조건 | 기록 | 동작 |
+|---|---|---|
+| 보낼 시각에 진행 중 요청이 64개(상한) | `STOP LOAD_GENERATOR_SATURATED` | 새 요청을 멈춘다. 요청을 대기열에 쌓지 않으므로 다음 단계·관찰 구간으로 넘어가 시작되는 요청이 없다 |
+| 단계가 끝나고 2초 안에 그 단계 요청이 다 끝나지 않음 | `STOP STAGE_NOT_DRAINED` | 다음 단계(또는 관찰)로 가지 않는다 |
+| 30초 사이 201 외 응답이 10건 이상 늘어남 | `STOP ERROR_THRESHOLD` | 새 요청을 멈춘다 |
+
+멈추면 이미 보낸 요청이 끝날 때까지(요청마다 10초 이내) 기다린 뒤 `FAIL <이유> outstanding 0`을 쓰고 종료 코드 2로 끝낸다. 정상이면 `DONE outstanding 0`을 쓰고 종료 코드 0이다. 멈춘 RUN은 불합격으로 기록한다.
 
 ## `q_range.py`
 
@@ -39,7 +50,7 @@ python3 q_range.py <start> <end>          # 판정용: query_range(step 15초) �
 
 ## 운영 영향과 중단
 
-- 운영 `fdsdb`에 시험 거래 21,000건이 쌓인다. Deployment·Resource·설정은 바꾸지 않는다.
+- 운영 `fdsdb`에 시험 거래가 최대 21,000건 쌓인다. Deployment·Resource·설정은 바꾸지 않는다.
 - 부하는 약 15분, 최대 50 rps다. 시작 전에 팀 채팅으로 공지한다.
-- 시작 조건: `gen2.py`의 SHA-256이 위 표와 같고, Worker 3대 `/readyz`가 모두 200일 때만 시작한다.
-- 중단: 진행 로그에서 30초 사이 201 외 코드가 10건 이상 늘거나 Pod NotReady·재시작이 보이면 `kill <PID>`로 멈춘다. 그 RUN은 불합격으로 기록한다.
+- 시작 조건: 실행할 `gen3.py`의 SHA-256이 리뷰를 마친 저장소 파일과 같고, Worker 3대 `/readyz`가 모두 200일 때만 시작한다.
+- 수동 중단: Pod NotReady·재시작이 보이면 `kill <PID>`로 멈추고 그 RUN을 불합격으로 기록한다.
