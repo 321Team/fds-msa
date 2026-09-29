@@ -461,4 +461,4 @@ jobs:
           name: apko-wolfi-py313-${{ inputs.source_sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/apko-wolfi-py313/evidence/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
