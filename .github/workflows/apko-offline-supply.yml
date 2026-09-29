@@ -3,13 +3,12 @@ name: apko Wolfi Python 3.13 offline supply
 on:
   pull_request:
     branches: [main]
+    # PR 실행은 base.sha 소스를 패키징하므로 앱 코드만 바뀐 PR에서는 main 결과와 중복된다.
     paths:
       - ".github/workflows/apko-offline-supply.yml"
       - "tools/create_apko_offline_supply.py"
       - "tools/tests/test_apko_offline_supply.py"
       - "ci/apko/**"
-      - "transaction-api/**"
-      - "fds-engine/**"
   push:
     branches: [main]
     paths:
