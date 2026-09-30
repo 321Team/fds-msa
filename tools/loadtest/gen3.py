@@ -7,7 +7,8 @@
   새 요청을 멈춘다. 요청이 대기열에 쌓이지 않으므로 다음 단계나 관찰 구간으로 넘어가 시작되지 않는다.
 - 단계가 끝나면 그 단계 요청이 DRAIN초 안에 모두 끝나야 다음 단계(또는 관찰)로 간다.
   아니면 STAGE_NOT_DRAINED로 멈춘다.
-- PROGRESS초 사이 201 외 응답이 ERROR_STOP건 이상 늘면 ERROR_THRESHOLD로 멈춘다.
+- PROGRESS초 사이 201 외 응답이 ERROR_STOP건 이상 늘면 ERROR_THRESHOLD로 멈춘다. 단계가 끝나 그 단계
+  요청이 모두 끝난 뒤에도 마지막 진행 기록 이후 늘어난 수를 같은 기준으로 한 번 더 본다.
 멈추면 이미 보낸 요청이 끝날 때까지(요청마다 TIMEOUT초 이내) 기다린 뒤 종료 코드 2로 끝낸다.
 정상 종료는 남은 요청 0건을 기록하고 종료 코드 0이다.
 """
@@ -110,6 +111,12 @@ def run(run_id, out_dir, targets=TARGETS, port=PORT, stages=STAGES, idle=IDLE, m
             if not_done:
                 stop = 'STAGE_NOT_DRAINED'
                 log('STOP', stop, stage, 'outstanding', len(not_done), f'{time.time():.3f}')
+                break
+            # 마지막 진행 기록 뒤(단계 끝까지와 drain 중) 늘어난 201 외 응답도 같은 기준으로 본다.
+            tail_errors = errors(snapshot()) - last_errors
+            if tail_errors >= error_stop:
+                stop = 'ERROR_THRESHOLD'
+                log('STOP', stop, stage, 'tail_errors', tail_errors, f'{time.time():.3f}')
                 break
             log('DRAINED', stage, f'{time.time():.3f}')
         if not stop:
