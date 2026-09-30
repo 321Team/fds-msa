@@ -1,0 +1,10 @@
+P1-APP-01 부하 재시험 관측 query (시험 전 고정) - 결정안 v2 #15 5885861552 / G3 APPROVED 5886568007 / 승인 대상 조정 5886692226
+Prometheus: control01 127.0.0.1:19091 (이 시험 전용 monitoring-api/prometheus port-forward), scrape_interval 15s
+Q1_CPU_core=sum by (pod) (rate(container_cpu_usage_seconds_total{job="kubelet-cadvisor",namespace="fds-app",container=~"transaction-api|fds-engine"}[1m]))
+Q2_MEM_byte=sum by (pod) (container_memory_working_set_bytes{job="kubelet-cadvisor",namespace="fds-app",container=~"transaction-api|fds-engine"})
+Q3_THR_ratio=sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{job="kubelet-cadvisor",namespace="fds-app",container=~"transaction-api|fds-engine"}[1m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{job="kubelet-cadvisor",namespace="fds-app",container=~"transaction-api|fds-engine"}[1m]))
+조회: 시험 뒤 query_range start=기준 시작-60s end=관찰 끝 step=15s, 응답 JSON 원본으로만 판정 (시험 중 instant 조회는 감시용)
+구간 값: CPU·THR은 평가 시각 t가 [구간 시작+60s, 구간 끝]인 값만, MEM은 기준 시작~관찰 끝 전체. 워크로드 값 = Pod 3개 중 최대. 구간 시각 = edge01 stages.log
+워크로드 = pod 이름 접두사 transaction-api- / fds-engine-. 단위: core x1000 = m, byte / 1048576 = MiB
+fail-closed: 필요한 워크로드 시계열이 통째로 비었거나 산식에 필요한 유효 샘플이 없으면 PASS 아님 -> NOT_VERIFIED/STOP. Q3 NaN->0은 분모가 실제 0으로 반환된 경우만, metric/series 부재는 0으로 보지 않음. 일부 point 누락은 제외하고 개수 기록
+시험 뒤 query를 바꾸면 새 RUN
