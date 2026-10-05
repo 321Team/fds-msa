@@ -163,13 +163,13 @@ jobs:
           runtime_sbom = load_sbom(runtime_sbom_path)
 
           required_builder = {
-              ("python-3.13", "3.13.15_git20260925-r0"),
-              ("py3.13-pip", "26.2.1-r1"),
-              ("tzdata", "2026d-r0"),
+              ("python-3.13", "3.13.16_git20261002-r2"),
+              ("py3.13-pip", "26.2.1-r2"),
+              ("tzdata", "2026e-r0"),
           }
           required_runtime = {
-              ("python-3.13", "3.13.15_git20260925-r0"),
-              ("tzdata", "2026d-r0"),
+              ("python-3.13", "3.13.16_git20261002-r2"),
+              ("tzdata", "2026e-r0"),
           }
 
           assert required_builder <= builder_lock, sorted(required_builder - builder_lock)
