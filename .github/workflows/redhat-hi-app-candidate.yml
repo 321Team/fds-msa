@@ -251,4 +251,4 @@ jobs:
           name: redhat-hi-app-candidate-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/redhat-hi-app-candidate/evidence/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2

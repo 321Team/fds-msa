@@ -152,4 +152,4 @@ jobs:
           name: runtime-base-probe-${{ matrix.id }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-base-probe/${{ matrix.id }}/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
