@@ -404,41 +404,41 @@
       },
       {
         "name": "openssl-4.0-libcrypto",
-        "url": "https://packages.wolfi.dev/os/x86_64/openssl-4.0-libcrypto-4.0.3-r3.apk",
-        "version": "4.0.3-r3",
+        "url": "https://packages.wolfi.dev/os/x86_64/openssl-4.0-libcrypto-4.0.3-r4.apk",
+        "version": "4.0.3-r4",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-14049",
-          "checksum": "sha1-b4G1sNKXcxy3Vh2mP3kJ/jZjdYE="
+          "range": "bytes=0-17335",
+          "checksum": "sha1-MgbIVyX5+W5RO6i6CQjB3TtnMTI="
         },
         "data": {
-          "range": "bytes=14050-2396744",
-          "checksum": "sha256-FJPyAyOYV2qNpQtBpT8VP72m0N8lQZLwCE+lE6KO9ys="
+          "range": "bytes=17336-2413423",
+          "checksum": "sha256-OkruRbk9Hm2KgLGIAwuYv3Rt0uBL/Ljyn9cERl0bMks="
         },
-        "checksum": "Q1b4G1sNKXcxy3Vh2mP3kJ/jZjdYE="
+        "checksum": "Q1MgbIVyX5+W5RO6i6CQjB3TtnMTI="
       },
       {
         "name": "openssl-4.0-libssl",
-        "url": "https://packages.wolfi.dev/os/x86_64/openssl-4.0-libssl-4.0.3-r3.apk",
-        "version": "4.0.3-r3",
+        "url": "https://packages.wolfi.dev/os/x86_64/openssl-4.0-libssl-4.0.3-r4.apk",
+        "version": "4.0.3-r4",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-14020",
-          "checksum": "sha1-p4V03cwi4QFSuGvtiF1KIQC07NY="
+          "range": "bytes=0-17311",
+          "checksum": "sha1-okb7puswUNowEzdYK7MdQAN9cqg="
         },
         "data": {
-          "range": "bytes=14021-570087",
-          "checksum": "sha256-31KiDuzP84tHZNz+bR8V+dFdsQCNfpIr/jH3Rh/BiqE="
+          "range": "bytes=17312-573386",
+          "checksum": "sha256-A/7obXhyAiiRjDiMMxYvnHQmRVRDmVLTBFd+0Cosjn8="
         },
-        "checksum": "Q1p4V03cwi4QFSuGvtiF1KIQC07NY="
+        "checksum": "Q1okb7puswUNowEzdYK7MdQAN9cqg="
       },
       {
         "name": "xz",
