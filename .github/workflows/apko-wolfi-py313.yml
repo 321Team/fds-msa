@@ -105,8 +105,10 @@ jobs:
               echo "APKO_REPO_LOCKFILES_MATCH=DRIFT_NOT_BLOCKING" | tee "$evidence/repo-lockfile-match.txt"
             fi
           else
-            builder_lock="$generated_builder_lock"
-            runtime_lock="$generated_runtime_lock"
+            builder_lock="$evidence/wolfi-python313-builder.apko.lock.json"
+            runtime_lock="$evidence/wolfi-python313-runtime.apko.lock.json"
+            cp "$generated_builder_lock" "$builder_lock"
+            cp "$generated_runtime_lock" "$runtime_lock"
             echo "APKO_REPO_LOCKFILES_MATCH=NOT_YET_PINNED" | tee "$evidence/repo-lockfile-match.txt"
           fi
 
@@ -447,7 +449,7 @@ jobs:
 
           cat > "$evidence/COVERAGE_BOUNDARY.txt" <<'EOF'
           RESULT_SCOPE=CANDIDATE_ONLY
-          APKO_LOCKFILES=GENERATED_AND_PRESERVED
+          APKO_LOCKFILES=REPO_LOCK_BUILD_INPUT_GENERATED_LOCK_FRESHNESS_ONLY
           APKO_REPRODUCIBILITY=REQUIRED_2_BUILDS_IDENTICAL
           SPDX_SBOM=GENERATED
           PROJECT_PROVENANCE_RECEIPT=GENERATED

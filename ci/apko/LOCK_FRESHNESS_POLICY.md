@@ -2,6 +2,8 @@
 
 관련: [MSA PR14](https://github.com/321Team/fds-msa/pull/14), [P1-CICD-01](https://github.com/321Team/fds-project-baseline/issues/16), [LOCK_DRIFT_DIAGNOSTICS.md](LOCK_DRIFT_DIAGNOSTICS.md).
 
+결정 기록: [DEC-P1-IMG-01 변경안(PROPOSED) 6029918560](https://github.com/321Team/fds-project-baseline/issues/110#issuecomment-6029918560) → [APP Lead 채택 6030105982](https://github.com/321Team/fds-project-baseline/issues/110#issuecomment-6030105982). Review Owner 확인 전에는 병합하지 않는다.
+
 ## 왜 바꾸나
 
 두 workflow는 실행할 때마다 rolling Wolfi index로 lock을 다시 만들고, 커밋된 lock과 바이트가 다르면 실패했습니다. 2026-10-06~07 사이 12시간 동안 상류가 세 번 바뀌었습니다(openssl 4.0.3-r2→r3→r4, glibc 2.44-r7→r8). 그래서 lock 갱신 PR이 리뷰·병합되는 사이에 main 공급 CI가 다시 깨졌습니다. 이 방식에서는 "공급물이 재현되는가"와 "상류가 바뀌었는가"가 한 검사에 섞여 있습니다.
