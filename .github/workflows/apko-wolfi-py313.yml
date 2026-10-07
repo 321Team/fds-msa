@@ -38,6 +38,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
+          # Full history: the drift age limit reads when the committed locks were last changed.
+          fetch-depth: 0
 
       - name: Build reproducible apko bases with lockfiles and SPDX SBOMs
         run: |
@@ -103,6 +105,8 @@ jobs:
             else
               echo "::warning title=apko lock freshness::Upstream Wolfi resolves to different packages than the committed locks. Build continues from the committed locks; open a reviewed lock refresh PR to adopt upstream changes."
               echo "APKO_REPO_LOCKFILES_MATCH=DRIFT_NOT_BLOCKING" | tee "$evidence/repo-lockfile-match.txt"
+              # DEC-P1-IMG-01: drift may stay unresolved for at most 3 days after the locks were committed.
+              python3 tools/check_apko_lock_age.py --max-days 3 "$repo_builder_lock" "$repo_runtime_lock"
             fi
           else
             builder_lock="$evidence/wolfi-python313-builder.apko.lock.json"
