@@ -8,6 +8,8 @@ on:
       - "tools/create_apko_offline_supply.py"
       - "tools/tests/test_apko_offline_supply.py"
       - "tools/check_apko_lock_drift.py"
+      - "tools/check_apko_lock_binding.py"
+      - "tools/tests/test_apko_lock_binding.py"
       - "tools/tests/test_apko_lock_drift.py"
       - "ci/apko/**"
       - "transaction-api/**"
@@ -19,6 +21,8 @@ on:
       - "tools/create_apko_offline_supply.py"
       - "tools/tests/test_apko_offline_supply.py"
       - "tools/check_apko_lock_drift.py"
+      - "tools/check_apko_lock_binding.py"
+      - "tools/tests/test_apko_lock_binding.py"
       - "tools/tests/test_apko_lock_drift.py"
       - "ci/apko/**"
       - "transaction-api/**"
@@ -62,6 +66,7 @@ jobs:
           test -z "$(git status --porcelain)"
           python3 -m unittest discover -s tools/tests -p 'test_apko_offline_supply.py' -v
           python3 -m unittest discover -s tools/tests -p 'test_apko_lock_drift.py' -v
+          python3 -m unittest discover -s tools/tests -p 'test_apko_lock_binding.py' -v
 
       - name: Checkout exact approved application source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -99,10 +104,21 @@ jobs:
           builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
           runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
 
+          # Blocking: the committed locks must be bound to the committed YAML.
+          python3 "$GITHUB_WORKSPACE/tools/check_apko_lock_binding.py"             "$builder_cfg" "$builder_lock" "$runtime_cfg" "$runtime_lock"
+
+          # Non-blocking freshness observation against the rolling Wolfi index.
+          # The supply is built only from the committed locks below; drift is kept
+          # as diagnostics evidence and a warning, and is adopted only through a
+          # reviewed lock refresh PR.
           "$apko" lock "$builder_cfg" --output "$work/builder.generated.lock.json" --arch=amd64
           "$apko" lock "$runtime_cfg" --output "$work/runtime.generated.lock.json" --arch=amd64
-          cmp "$builder_lock" "$work/builder.generated.lock.json"
-          cmp "$runtime_lock" "$work/runtime.generated.lock.json"
+          if cmp -s "$builder_lock" "$work/builder.generated.lock.json"              && cmp -s "$runtime_lock" "$work/runtime.generated.lock.json"; then
+            echo "APKO_LOCK_FRESHNESS=MATCH"
+          else
+            echo "::warning title=apko lock freshness::Upstream Wolfi resolves to different packages than the committed locks; see the lock diagnostics artifact."
+            echo "APKO_LOCK_FRESHNESS=DRIFT_NOT_BLOCKING"
+          fi
 
           "$apko" build --arch=amd64 --lockfile="$builder_lock" --sbom=false \
             "$builder_cfg" "fds-apko-wolfi-builder:$SOURCE_SHA" "$work/builder.oci.tar"
@@ -137,7 +153,9 @@ jobs:
             --source-sha "$SOURCE_SHA" --supply-tool-sha "$SUPPLY_TOOL_SHA" \
             --apko-version "$APKO_VERSION" --apko-archive-sha256 "$APKO_ARCHIVE_SHA" \
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --build-outcome "${{ steps.apko_bases.outcome }}"
+            --build-outcome "${{ steps.apko_bases.outcome }}" || rc=$?
+          # 0=MATCH, 1=DRIFT (recorded, not blocking); anything else is an evidence failure.
+          case "${rc:-0}" in 0|1) ;; *) exit "$rc" ;; esac
 
       - name: Upload exact lock diagnostics
         if: ${{ always() && steps.apko_bases.outcome != 'skipped' }}

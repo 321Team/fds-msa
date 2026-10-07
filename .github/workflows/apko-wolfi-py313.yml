@@ -66,11 +66,12 @@ jobs:
 
           builder_cfg="ci/apko/wolfi-python313-builder.apko.yaml"
           runtime_cfg="ci/apko/wolfi-python313-runtime.apko.yaml"
-          builder_lock="$evidence/wolfi-python313-builder.apko.lock.json"
-          runtime_lock="$evidence/wolfi-python313-runtime.apko.lock.json"
+          generated_builder_lock="$evidence/wolfi-python313-builder.apko.generated.lock.json"
+          generated_runtime_lock="$evidence/wolfi-python313-runtime.apko.generated.lock.json"
 
-          "$apko" lock "$builder_cfg" --output "$builder_lock" --arch=amd64
-          "$apko" lock "$runtime_cfg" --output "$runtime_lock" --arch=amd64
+          # Freshness observation only: what the rolling Wolfi index resolves to right now.
+          "$apko" lock "$builder_cfg" --output "$generated_builder_lock" --arch=amd64
+          "$apko" lock "$runtime_cfg" --output "$generated_runtime_lock" --arch=amd64
 
           repo_builder_lock="ci/apko/wolfi-python313-builder.apko.lock.json"
           repo_runtime_lock="ci/apko/wolfi-python313-runtime.apko.lock.json"
@@ -78,26 +79,38 @@ jobs:
           if [ -f "$repo_builder_lock" ] || [ -f "$repo_runtime_lock" ]; then
             test -f "$repo_builder_lock"
             test -f "$repo_runtime_lock"
-            mismatch=0
-            if ! cmp -s "$repo_builder_lock" "$builder_lock"; then
-              echo "::group::APKO builder lock diff"
-              diff -u "$repo_builder_lock" "$builder_lock" || true
+            # Reproducibility input is the committed lock. It must still be bound to the committed YAML.
+            python3 tools/check_apko_lock_binding.py               "$builder_cfg" "$repo_builder_lock" "$runtime_cfg" "$repo_runtime_lock"               | tee "$evidence/repo-lockfile-binding.txt"
+            builder_lock="$evidence/wolfi-python313-builder.apko.lock.json"
+            runtime_lock="$evidence/wolfi-python313-runtime.apko.lock.json"
+            cp "$repo_builder_lock" "$builder_lock"
+            cp "$repo_runtime_lock" "$runtime_lock"
+            drift=0
+            if ! cmp -s "$repo_builder_lock" "$generated_builder_lock"; then
+              echo "::group::APKO builder lock freshness diff (repo -> current upstream)"
+              diff -u "$repo_builder_lock" "$generated_builder_lock" || true
               echo "::endgroup::"
-              mismatch=1
+              drift=1
             fi
-            if ! cmp -s "$repo_runtime_lock" "$runtime_lock"; then
-              echo "::group::APKO runtime lock diff"
-              diff -u "$repo_runtime_lock" "$runtime_lock" || true
+            if ! cmp -s "$repo_runtime_lock" "$generated_runtime_lock"; then
+              echo "::group::APKO runtime lock freshness diff (repo -> current upstream)"
+              diff -u "$repo_runtime_lock" "$generated_runtime_lock" || true
               echo "::endgroup::"
-              mismatch=1
+              drift=1
             fi
-            test "$mismatch" -eq 0
-            echo "APKO_REPO_LOCKFILES_MATCH=PASS" | tee "$evidence/repo-lockfile-match.txt"
+            if [ "$drift" -eq 0 ]; then
+              echo "APKO_REPO_LOCKFILES_MATCH=PASS" | tee "$evidence/repo-lockfile-match.txt"
+            else
+              echo "::warning title=apko lock freshness::Upstream Wolfi resolves to different packages than the committed locks. Build continues from the committed locks; open a reviewed lock refresh PR to adopt upstream changes."
+              echo "APKO_REPO_LOCKFILES_MATCH=DRIFT_NOT_BLOCKING" | tee "$evidence/repo-lockfile-match.txt"
+            fi
           else
+            builder_lock="$generated_builder_lock"
+            runtime_lock="$generated_runtime_lock"
             echo "APKO_REPO_LOCKFILES_MATCH=NOT_YET_PINNED" | tee "$evidence/repo-lockfile-match.txt"
           fi
 
-          sha256sum             "$builder_cfg"             "$runtime_cfg"             "$builder_lock"             "$runtime_lock"             > "$evidence/apko-input-SHA256SUMS"
+          sha256sum             "$builder_cfg"             "$runtime_cfg"             "$builder_lock"             "$runtime_lock"             "$generated_builder_lock"             "$generated_runtime_lock"             > "$evidence/apko-input-SHA256SUMS"
 
           build_twice() {
             name="$1"
