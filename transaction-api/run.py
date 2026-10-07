@@ -28,7 +28,13 @@ async def main() -> None:
     )
     metrics_server = uvicorn.Server(
         uvicorn.Config(
-            metrics_app, host="0.0.0.0", port=METRICS_PORT, log_level="warning"
+            metrics_app,
+            host="0.0.0.0",
+            port=METRICS_PORT,
+            # Both listeners share Uvicorn's process-global loggers. Reconfiguring
+            # them here silences the main API's INFO access logs as well.
+            log_config=None,
+            log_level=None,
         )
     )
     await asyncio.gather(main_server.serve(), metrics_server.serve())
