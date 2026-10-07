@@ -5,10 +5,10 @@ Usage: check_apko_lock_age.py [--max-days N] [--now EPOCH] LOCK [LOCK ...]
 
 Freshness drift is a warning, not a gate, but DEC-P1-IMG-01 caps how long it may
 stay unresolved (3 days). The workflow calls this only after it has observed
-drift. The age is measured from the author time of the last commit that touched
-any of the given lock files, i.e. when the lock refresh was generated and
-committed; merge commits keep that time. A shallow clone would report the
-checkout commit instead, so it is rejected.
+drift, passing only the lock files that differ. Each lock is checked against
+its own last change's author time; refreshing another lock cannot reset it.
+This is a conservative lock-age bound, not a persisted first-drift time.
+Unknown history and author times later than the check time are rejected.
 """
 import subprocess
 import sys
@@ -21,13 +21,19 @@ def git(*args):
     return subprocess.run(['git', *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def lock_epoch(locks):
+def lock_epoch(locks, now):
     if git('rev-parse', '--is-shallow-repository') != 'false':
         raise ValueError('shallow clone: lock commit time is unknown (use fetch-depth: 0)')
-    stamp = git('log', '-1', '--format=%at', '--', *locks)
-    if not stamp.isdigit():
-        raise ValueError(f'no commit touches {" ".join(locks)}')
-    return int(stamp)
+    epochs = []
+    for lock in locks:
+        stamp = git('log', '-1', '--format=%at', '--', lock)
+        if not stamp.isdigit():
+            raise ValueError(f'no commit touches {lock}')
+        committed = int(stamp)
+        if committed > now:
+            raise ValueError(f'{lock}: lock commit author time is later than the check time')
+        epochs.append(committed)
+    return min(epochs)
 
 
 def main(argv):
@@ -46,12 +52,13 @@ def main(argv):
     if not locks or max_days < 1:
         print('usage: check_apko_lock_age.py [--max-days N] [--now EPOCH] LOCK [LOCK ...]', file=sys.stderr)
         return 2
+    checked_at = int(time.time()) if now is None else now
     try:
-        committed = lock_epoch(locks)
+        committed = lock_epoch(locks, checked_at)
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         print(f'APKO_LOCK_DRIFT_AGE=FAIL {exc}', file=sys.stderr)
         return 1
-    age = (int(time.time()) if now is None else now) - committed
+    age = checked_at - committed
     limit = max_days * 86400
     stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(committed))
     if age > limit:

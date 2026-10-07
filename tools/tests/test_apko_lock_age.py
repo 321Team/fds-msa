@@ -7,6 +7,7 @@ import unittest
 from tools.check_apko_lock_age import main
 
 LOCK = 'ci/apko/builder.lock.json'
+RUNTIME_LOCK = 'ci/apko/runtime.lock.json'
 T0 = 1791000000  # fixed author time for the lock commit
 DAY = 86400
 
@@ -21,7 +22,8 @@ class LockAgeTests(unittest.TestCase):
         self.git('init', '-q')
         Path('ci/apko').mkdir(parents=True)
         Path(LOCK).write_text('{}')
-        self.commit(T0, LOCK)
+        Path(RUNTIME_LOCK).write_text('{}')
+        self.commit(T0, 'ci/apko')
 
     def git(self, *args, env=None):
         subprocess.run(['git', *args], check=True, capture_output=True, env=env)
@@ -48,6 +50,29 @@ class LockAgeTests(unittest.TestCase):
         Path(LOCK).write_text('{"v": 2}')
         self.commit(T0 + 5 * DAY, LOCK)
         self.assertEqual(main(['--now', str(T0 + 5 * DAY), LOCK]), 0)
+
+    def test_refreshing_builder_does_not_reset_runtime_age(self):
+        Path(LOCK).write_text('{"v": 2}')
+        self.commit(T0 + 4 * DAY, LOCK)
+        self.assertEqual(main(['--now', str(T0 + 4 * DAY), LOCK, RUNTIME_LOCK]), 1)
+
+    def test_only_drifted_lock_is_checked(self):
+        Path(LOCK).write_text('{"v": 2}')
+        self.commit(T0 + 4 * DAY, LOCK)
+        self.assertEqual(main(['--now', str(T0 + 4 * DAY), LOCK]), 0)
+
+    def test_future_lock_commit_fails(self):
+        Path(LOCK).write_text('{"v": 2}')
+        self.commit(T0 + DAY, LOCK)
+        self.assertEqual(main(['--now', str(T0), LOCK]), 1)
+
+    def test_future_commit_is_not_hidden_by_an_older_lock(self):
+        Path(LOCK).write_text('{"v": 2}')
+        self.commit(T0 + DAY, LOCK)
+        self.assertEqual(main(['--now', str(T0), RUNTIME_LOCK, LOCK]), 1)
+
+    def test_known_lock_does_not_hide_an_uncommitted_lock(self):
+        self.assertEqual(main(['--now', str(T0), LOCK, 'ci/apko/missing.lock.json']), 1)
 
     def test_shallow_clone_fails(self):
         Path('.git/shallow').write_text('0' * 40 + '\n')
