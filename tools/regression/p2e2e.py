@@ -98,7 +98,8 @@ def case_table(run_id, fixture_date):
 def db_query(run_id):
     return ("select account_id, transaction_id, transaction_type, amount, fds_detected, fds_evaluation_skipped, "
             "coalesce((select string_agg(r->>'rule_id', ',' order by r->>'rule_id') from jsonb_array_elements("
-            "coalesce(fds_rules, '[]'::jsonb)) r where (r->>'triggered')::bool), '-'), occurred_at "
+            "case when jsonb_typeof(fds_rules) = 'array' then fds_rules else '[]'::jsonb end) r "
+            "where (r->>'triggered')::bool), '-'), occurred_at "
             f"from transactions where account_id like 'SIM\\_p2\\_{run_id}\\_%' order by received_at;")
 
 
@@ -196,6 +197,35 @@ def read_ledger(plan_dir):
         return [json.loads(line) for line in f if line.strip()]
 
 
+def load_bound(plan_dir, out_dir):
+    """judge·crosscheck 공통: 실행 당시 기준·RUN·Route·도구와 지금 입력이 같은지 확인한다. 다르면 Stop."""
+    crit, actual_sha = load_criteria(plan_dir)
+    with open(os.path.join(out_dir, 'run_meta.json'), encoding='utf-8') as f:
+        meta = json.load(f)
+    if (actual_sha != meta.get('criteria_sha256') or crit.get('run') != meta.get('run')
+            or crit.get('base_url') != meta.get('base_url') or crit.get('tool_sha256') != meta.get('tool_sha256')
+            or tool_sha() != meta.get('tool_sha256')):
+        raise Stop(f'EVIDENCE_BINDING_MISMATCH criteria={actual_sha} run_meta={meta.get("criteria_sha256")}')
+    group = meta.get('group')
+    cases = [c for c in crit['cases'] if c['group'] == group]
+    if group not in GROUPS or not cases:
+        raise Stop(f'BAD_GROUP {group}')
+    return crit, meta, cases
+
+
+def read_results(out_dir):
+    """results.jsonl → {사례: [기록, ...]}. 같은 사례가 두 번 있으면 둘 다 남긴다."""
+    got = {}
+    path = os.path.join(out_dir, 'results.jsonl')
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    r = json.loads(line)
+                    got.setdefault(r['case'], []).append(r)
+    return got
+
+
 def judge_one(expect, code, text):
     """(판정, 내용). 판정: PASS | FAIL | INFO."""
     kind = expect['kind']
@@ -233,23 +263,23 @@ def judge_one(expect, code, text):
 
 
 def judge(plan_dir, out_dir, emit=print):
-    crit, _ = load_criteria(plan_dir)
-    with open(os.path.join(out_dir, 'run_meta.json'), encoding='utf-8') as f:
-        group = json.load(f)['group']
-    got = {}
-    path = os.path.join(out_dir, 'results.jsonl')
-    if os.path.exists(path):
-        with open(path, encoding='utf-8') as f:
-            for line in f:
-                r = json.loads(line)
-                got[r['case']] = r
+    try:
+        _, meta, cases = load_bound(plan_dir, out_dir)
+    except (Stop, OSError, ValueError, KeyError) as e:
+        emit(f'STOP {e}')  # 기존 judge.txt는 건드리지 않는다
+        return 2
+    group = meta['group']
+    got = read_results(out_dir)
     counts = {'PASS': 0, 'FAIL': 0, 'INFO': 0}
     lines = []
-    for c in (c for c in crit['cases'] if c['group'] == group):
-        r = got.get(c['id'])
-        if r is None:
+    for c in cases:
+        recs = got.get(c['id'], [])
+        if not recs:
             verdict, detail, code = 'FAIL', 'NOT_SENT', '-'
+        elif len(recs) > 1:
+            verdict, detail, code = 'FAIL', f'DUPLICATE_RECORD x{len(recs)}', recs[0]['http']
         else:
+            r = recs[0]
             verdict, detail = judge_one(c['expect'], r['http'], r['body'])
             code = r['http']
         counts[verdict] += 1
@@ -342,40 +372,65 @@ def parse_ts(value):
 
 
 def crosscheck(plan_dir, out_dir, db_log, emit=print):
-    crit, _ = load_criteria(plan_dir)
-    with open(os.path.join(out_dir, 'run_meta.json'), encoding='utf-8') as f:
-        group = json.load(f)['group']
-    cases = {c['id']: c for c in crit['cases'] if c['group'] == group and c['method'] == 'POST'}
+    """201 응답과 DB 행을 Transaction ID로 일대일 대조한다. 중복 ID·사례 기록 누락/중복·DB 행 중복은 불일치."""
+    try:
+        _, meta, group_cases = load_bound(plan_dir, out_dir)
+    except (Stop, OSError, ValueError, KeyError) as e:
+        emit(f'STOP {e}')
+        return 2
+    group = meta['group']
+    cases = {c['id']: c for c in group_cases if c['method'] == 'POST'}
     accounts = {c['payload']['account_id'] for c in cases.values()}
+    bad = 0
     db = {}
     with open(db_log, encoding='utf-8') as f:
         for line in f:
             p = line.rstrip('\n').split('|')
-            if len(p) == 8 and p[0] in accounts:
-                db[p[1]] = p
-    bad, seen = 0, set()
-    with open(os.path.join(out_dir, 'results.jsonl'), encoding='utf-8') as f:
-        results = [json.loads(line) for line in f]
-    for r in results:
-        c = cases.get(r['case'])
-        if c is None:
-            continue
+            if len(p) != 8 or p[0] not in accounts:
+                continue
+            if p[1] in db:
+                bad += 1
+                emit(f'NG DB 행 Transaction ID 중복 {p[0]} {p[1]}')
+                continue
+            db[p[1]] = p
+    got = read_results(out_dir)
+    n201, owner = 0, {}
+    for cid, c in cases.items():
+        recs = got.get(cid, [])
+        if len(recs) != 1:
+            bad += 1
+            emit(f'NG {cid} 결과 기록 {len(recs)}건(1건이어야 함)')
+            if not recs:
+                continue
+        r = recs[0]
         if r['http'] != 201:
-            emit(f"-- {r['case']} http={r['http']} (201이 아니므로 DB 행 없음 기대)")
+            emit(f"-- {cid} http={r['http']} (201이 아니므로 DB 행 없음 기대)")
             continue
-        j = json.loads(r['body'])
-        tid = j['transaction_id']
-        seen.add(tid)
+        n201 += 1
+        try:
+            j = json.loads(r['body'])
+            tid = j['transaction_id']
+        except (ValueError, KeyError, TypeError):
+            j, tid = {}, None
+        if not isinstance(tid, str) or not tid:
+            bad += 1
+            emit(f'NG {cid} 응답에 Transaction ID 없음')
+            continue
+        if tid in owner:
+            bad += 1
+            emit(f'NG {cid} {tid} 중복 Transaction ID ({owner[tid]}와 같음)')
+            continue
+        owner[tid] = cid
         row = db.get(tid)
         if row is None:
             bad += 1
-            emit(f"NG {r['case']} {tid} DB 행 없음")
+            emit(f'NG {cid} {tid} DB 행 없음')
             continue
         p = c['payload']
-        rules = sorted(x['rule_id'] for x in (j['fds_rules'] or []) if x['triggered'])
-        det = '' if j['fds_detected'] is None else ('t' if j['fds_detected'] else 'f')
+        rules = sorted(x['rule_id'] for x in (j.get('fds_rules') or []) if x.get('triggered'))
+        det = '' if j.get('fds_detected') is None else ('t' if j['fds_detected'] else 'f')
         want = [p['account_id'], tid, p['transaction_type'], float(p['amount']), det,
-                't' if j['fds_evaluation_skipped'] else 'f', ','.join(rules) or '-']
+                't' if j.get('fds_evaluation_skipped') else 'f', ','.join(rules) or '-']
         try:
             have = [row[0], row[1], row[2], float(row[3]), row[4], row[5], row[6]]
         except ValueError:
@@ -387,13 +442,13 @@ def crosscheck(plan_dir, out_dir, db_log, emit=print):
             if db_ts is None or abs(sent_ts - db_ts) > 0.001:
                 ok, note = False, f' occurred_at 불일치 sent={p["occurred_at"]} db={row[7]}'
         bad += not ok
-        emit(f"{'OK' if ok else 'NG'} {r['case']} {tid} occurred_at={row[7]}{note}"
+        emit(f"{'OK' if ok else 'NG'} {cid} {tid} occurred_at={row[7]}{note}"
              + ('' if want == have else f' want={want} have={have}'))
     for k, v in db.items():
-        if k not in seen:
+        if k not in owner:
             bad += 1
             emit(f'NG 응답에 없는 DB 행 {v[0]} {v[1]}')
-    emit(f'== {group} DB {len(db)}행 / 응답 201 {len(seen)}건 / 불일치 {bad}')
+    emit(f'== {group} 응답 201 {n201}건 / 고유 ID {len(owner)} / DB {len(db)}행 / 불일치 {bad}')
     return 1 if bad else 0
 
 

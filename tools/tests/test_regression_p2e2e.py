@@ -2,10 +2,14 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+import glob
 import hashlib
 import http.client
 import json
+import os
+import shutil
 import ssl
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -49,6 +53,11 @@ class _FakeApi(BaseHTTPRequestHandler):
             if occ.tzinfo is None:
                 occ = occ.replace(tzinfo=KST)
             tid = str(uuid.uuid4())
+            for prefix, fixed in s.dup_ids.items():          # 같은 계정 요청에 같은 ID를 돌려주는 결함 흉내
+                if req["account_id"].endswith(prefix):
+                    if any(r["tid"] == fixed for r in s.rows):
+                        return self._reply(201, s.last_body[fixed])
+                    tid = fixed
             if s.engine_down:
                 s.rows.append({"account": req["account_id"], "tid": tid, "type": req["transaction_type"],
                                "amount": req["amount"], "rules": None, "occ": occ.astimezone(KST)})
@@ -58,7 +67,7 @@ class _FakeApi(BaseHTTPRequestHandler):
             rules = set()
             if req["transaction_type"] == "withdrawal" and len(prior) >= 3:
                 rules.add("R01")
-            if req["amount"] >= 3000000:
+            if req["amount"] >= 3000000 and "R02" not in s.disabled:
                 rules.add("R02")
             if 1 <= occ.astimezone(KST).hour < 5 and req["amount"] >= 1000000:
                 rules.add("R04")
@@ -66,20 +75,23 @@ class _FakeApi(BaseHTTPRequestHandler):
                 rules.add("R07")
             s.rows.append({"account": req["account_id"], "tid": tid, "type": req["transaction_type"],
                            "amount": req["amount"], "rules": rules, "occ": occ.astimezone(KST)})
-        self._reply(201, {"transaction_id": tid, "fds_detected": bool(rules), "fds_evaluation_skipped": False,
-                          "fds_rules": [{"rule_id": r, "triggered": r in rules, "detail": None}
-                                        for r in ("R01", "R02", "R04", "R07")]})
+            body = {"transaction_id": tid, "fds_detected": bool(rules), "fds_evaluation_skipped": False,
+                    "fds_rules": [{"rule_id": r, "triggered": r in rules, "detail": None}
+                                  for r in ("R01", "R02", "R04", "R07")]}
+            s.last_body[tid] = body
+        self._reply(201, body)
 
     def log_message(self, *args):
         pass
 
 
 class P2RegressionToolTests(unittest.TestCase):
-    def serve(self, ready=200, fail_on=0, engine_down=False, metrics_code=503):
+    def serve(self, ready=200, fail_on=0, engine_down=False, metrics_code=503, disabled=(), dup_ids=None):
         server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeApi)
         server.daemon_threads = True
         server.ready, server.fail_on, server.engine_down, server.metrics_code = ready, fail_on, engine_down, metrics_code
         server.lock, server.posts, server.rows, server.now = threading.Lock(), 0, [], NOW
+        server.disabled, server.dup_ids, server.last_body = set(disabled), dict(dup_ids or {}), {}
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -321,7 +333,157 @@ class P2RegressionToolTests(unittest.TestCase):
             lines = []
             code = p2e2e.crosscheck(plan_dir, out, log, emit=lines.append)
         self.assertEqual(code, 0)
-        self.assertIn("== B3E DB 2행 / 응답 201 2건 / 불일치 0", lines)
+        self.assertIn("== B3E 응답 201 2건 / 고유 ID 2 / DB 2행 / 불일치 0", lines)
+
+    # --- 리뷰 R2: 후처리는 실행 당시 기준·RUN·Route·도구에 결속돼야 한다
+    def test_rejudge_and_crosscheck_refuse_changed_criteria_other_plan_or_tool(self):
+        server = self.serve(disabled=("R02",))
+        quiet = lambda line: None
+        with tempfile.TemporaryDirectory() as root:
+            plan_dir, sha = self.make_plan(root)
+            out = str(Path(root, "b1"))
+            code, _, _ = self.execute(server, plan_dir, sha, "B1", out)
+            before = Path(out, "judge.txt").read_text(encoding="utf-8")
+            crit_path = Path(plan_dir, "criteria.json")
+            original = crit_path.read_bytes()
+            crit = json.loads(original)
+            next(c for c in crit["cases"] if c["id"] == "P02")["expect"]["rules"] = []
+            crit_path.write_text(json.dumps(crit, ensure_ascii=False, sort_keys=True, indent=1) + "\n", encoding="utf-8")
+            lines = []
+            changed = p2e2e.judge(plan_dir, out, emit=lines.append)
+            after = Path(out, "judge.txt").read_text(encoding="utf-8")
+            log = str(Path(root, "db.log"))
+            self.db_log(server, log)
+            changed_cross = p2e2e.crosscheck(plan_dir, out, log, emit=quiet)
+            crit_path.write_bytes(original)
+            restored = p2e2e.judge(plan_dir, out, emit=quiet)
+            other_plan, _ = self.make_plan(str(Path(root, "other")), run="202610201100")
+            other = p2e2e.judge(other_plan, out, emit=quiet)
+            with mock.patch.object(p2e2e, "tool_sha", return_value="f" * 64):
+                tool = p2e2e.judge(plan_dir, out, emit=quiet)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL P02 201", before)
+        self.assertEqual(changed, 2)
+        self.assertTrue(lines[0].startswith("STOP EVIDENCE_BINDING_MISMATCH"))
+        self.assertEqual(after, before)                # 기존 판정 파일을 덮어쓰지 않는다
+        self.assertEqual(changed_cross, 2)
+        self.assertEqual(restored, 1)                  # 원래 기준으로는 같은 FAIL
+        self.assertEqual((other, tool), (2, 2))
+
+    # --- 리뷰 R3: Transaction ID 일대일 대응
+    def test_crosscheck_rejects_duplicate_ids_missing_records_and_duplicate_db_rows(self):
+        quiet = lambda line: None
+        dup = self.serve(dup_ids={"_N04": str(uuid.uuid4()), "_N05": str(uuid.uuid4())})
+        good = self.serve()
+        with tempfile.TemporaryDirectory() as root:
+            plan_a, sha_a = self.make_plan(str(Path(root, "a")))
+            out_a = str(Path(root, "a-b2"))
+            run_dup, _, _ = self.execute(dup, plan_a, sha_a, "B2", out_a)
+            log_a = str(Path(root, "a.log"))
+            self.db_log(dup, log_a)
+            lines = []
+            cross_dup = p2e2e.crosscheck(plan_a, out_a, log_a, emit=lines.append)
+
+            plan_b, sha_b = self.make_plan(str(Path(root, "b")))
+            out_b = str(Path(root, "b-b2"))
+            self.execute(good, plan_b, sha_b, "B2", out_b)
+            log_b = str(Path(root, "b.log"))
+            self.db_log(good, log_b)
+            ok_lines = []
+            cross_ok = p2e2e.crosscheck(plan_b, out_b, log_b, emit=ok_lines.append)
+            with open(log_b, encoding="utf-8") as f:
+                first_row = f.readline()
+            with open(log_b, "a", encoding="utf-8") as f:
+                f.write(first_row)                                     # DB 행 Transaction ID 중복
+            cross_dbdup = p2e2e.crosscheck(plan_b, out_b, log_b, emit=quiet)
+            self.db_log(good, log_b)
+            res = Path(out_b, "results.jsonl")
+            res.write_text("".join(line + "\n" for line in res.read_text(encoding="utf-8").splitlines()
+                                   if '"case": "N01"' not in line), encoding="utf-8")   # 사례 기록 누락
+            missing_lines = []
+            cross_missing = p2e2e.crosscheck(plan_b, out_b, log_b, emit=missing_lines.append)
+        self.assertEqual(run_dup, 0)                   # 요청별 판정만으로는 잡히지 않는다
+        self.assertEqual(cross_dup, 1)
+        self.assertTrue(any("중복 Transaction ID" in line for line in lines))
+        self.assertIn("== B2 응답 201 12건 / 고유 ID 6 / DB 6행 / 불일치 6", lines)
+        self.assertEqual(cross_ok, 0)
+        self.assertIn("== B2 응답 201 12건 / 고유 ID 12 / DB 12행 / 불일치 0", ok_lines)
+        self.assertEqual(cross_dbdup, 1)
+        self.assertEqual(cross_missing, 1)
+        self.assertTrue(any("N01 결과 기록 0건" in line for line in missing_lines))
+
+    # --- 리뷰 R1: 생성 SQL을 실제 PostgreSQL에서 실행(JSON null·SQL NULL·Rule 배열)
+    @staticmethod
+    def _pg_bindir():
+        found = shutil.which("initdb")
+        if found:
+            return os.path.dirname(found)
+        cands = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"))
+        return os.path.dirname(cands[-1]) if cands else None
+
+    def test_generated_db_query_runs_on_real_postgresql_with_json_null(self):
+        bindir = self._pg_bindir()
+        if not bindir:
+            self.skipTest("PostgreSQL(initdb) 없음 — CI Ubuntu 러너에서 실행")
+        normal, down = self.serve(), self.serve(engine_down=True)
+        with tempfile.TemporaryDirectory(prefix="pg") as root:
+            plan_dir, sha = self.make_plan(root)
+            out_b1, out_b3e = str(Path(root, "b1")), str(Path(root, "b3e"))
+            self.assertEqual(self.execute(normal, plan_dir, sha, "B1", out_b1)[0], 0)
+            self.assertEqual(self.execute(down, plan_dir, sha, "B3E", out_b3e)[0], 0)
+            data, sock = str(Path(root, "data")), str(Path(root, "s"))
+            os.mkdir(sock)
+            try:
+                subprocess.run([os.path.join(bindir, "initdb"), "-D", data, "-A", "trust", "-U", "postgres",
+                                "-E", "UTF8", "--no-sync"], check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                self.skipTest(f"initdb 실행 불가: {e.stderr[-200:]!r}")
+            pg_ctl = os.path.join(bindir, "pg_ctl")
+            subprocess.run([pg_ctl, "-D", data, "-o", f"-c listen_addresses='' -k {sock} -p 54329",
+                            "-l", str(Path(root, "pg.log")), "-w", "start"], check=True, capture_output=True)
+            self.addCleanup(subprocess.run, [pg_ctl, "-D", data, "-m", "immediate", "stop"], capture_output=True)
+            env = dict(os.environ, PGTZ="Asia/Seoul")
+
+            def psql(sql):
+                return subprocess.run([os.path.join(bindir, "psql"), "-h", sock, "-p", "54329", "-U", "postgres",
+                                       "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-At", "-F", "|", "-c", sql],
+                                      capture_output=True, text=True, env=env)
+
+            ddl = ("create table transactions (transaction_id text primary key, account_id text not null, "
+                   "amount numeric not null, currency text not null default 'KRW', transaction_type text not null, "
+                   "source_ip text, occurred_at timestamptz not null, received_at timestamptz not null, "
+                   "fds_detected boolean, fds_rules jsonb, fds_evaluation_skipped boolean not null default false)")
+            self.assertEqual(psql(ddl).returncode, 0)
+            values, n = [], 0
+            for r in normal.rows + down.rows:
+                n += 1
+                if r["rules"] is None:      # E01은 앱 기본 저장처럼 JSON null, E02는 SQL NULL
+                    rules_sql = "'null'::jsonb" if r["account"].endswith("_E01") else "NULL"
+                    det, skipped = "NULL", "true"
+                else:
+                    arr = [{"rule_id": x, "triggered": x in r["rules"], "detail": None}
+                           for x in ("R01", "R02", "R04", "R07")]
+                    rules_sql = "'" + json.dumps(arr) + "'::jsonb"
+                    det, skipped = ("true" if r["rules"] else "false"), "false"
+                values.append(f"('{r['tid']}', '{r['account']}', {r['amount']}, '{r['type']}', "
+                              f"'{r['occ'].isoformat()}', now() + interval '{n} second', {det}, {rules_sql}, {skipped})")
+            ins = ("insert into transactions (transaction_id, account_id, amount, transaction_type, occurred_at, "
+                   "received_at, fds_detected, fds_rules, fds_evaluation_skipped) values " + ", ".join(values))
+            self.assertEqual(psql(ins).returncode, 0)
+            query = json.loads(Path(plan_dir, "criteria.json").read_text(encoding="utf-8"))["db_query"]
+            result = psql(query)
+            old = psql(query.replace("case when jsonb_typeof(fds_rules) = 'array' then fds_rules else '[]'::jsonb end",
+                                     "coalesce(fds_rules, '[]'::jsonb)"))
+            log = str(Path(root, "db.log"))
+            Path(log).write_text(result.stdout, encoding="utf-8")
+            quiet = lambda line: None
+            cross_b1 = p2e2e.crosscheck(plan_dir, out_b1, log, emit=quiet)
+            cross_b3e = p2e2e.crosscheck(plan_dir, out_b3e, log, emit=quiet)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 13)
+        self.assertNotEqual(old.returncode, 0)                         # 수정 전 식은 JSON null에서 실패
+        self.assertIn("cannot extract elements from a scalar", old.stderr)
+        self.assertEqual((cross_b1, cross_b3e), (0, 0))
 
 
 if __name__ == "__main__":
