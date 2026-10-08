@@ -1,0 +1,9 @@
+# Portable workload base — 어느 Kubernetes/OpenShift에서나 같은 앱 계약만 둔다.
+# namespace·레지스트리·고정 UID/GID·외부 노출·환경 IP·DNS 경로는 overlay가 정한다.
+# base만 단독 적용하지 않는다(DNS egress가 없어 서비스 이름 조회가 막힌다).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - transaction-api.yaml
+  - fds-engine.yaml
+  - networkpolicy.yaml

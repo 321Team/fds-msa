@@ -1,0 +1,51 @@
+# 네임스페이스 안쪽 계약만 둔다: 기본 차단 + transaction-api → fds-engine 8001.
+# 외부 진입·모니터링 수집·DB·DNS 경로는 환경마다 다르므로 overlay가 같은 객체에 규칙을 덧붙인다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: transaction-api-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: transaction-api
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fds-engine
+      ports:
+        - port: 8001
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fds-engine-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: fds-engine
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: transaction-api
+      ports:
+        - port: 8001
+          protocol: TCP

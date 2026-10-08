@@ -1,0 +1,111 @@
+# Phase 1 운영(fds-app) 재현용 overlay — 비교 전용.
+# base + 이 overlay를 운영 클러스터에 `kubectl diff -k`로 대조해 base가 운영 상태를 담았는지 증명한다.
+# 이 overlay로 apply하지 않는다. Phase 1 운영 변경 책임과 기존 자료(infra-kubernetes)는 그대로다.
+# 기준 live: 2026-10-08 14:45 KST control01 수집(p2-app-43-live.tgz SHA-256 a2309982963b…16a8).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fds-app
+resources:
+  - ../../base
+  - services-p1.yaml
+images:
+  - name: transaction-api
+    newName: 10.1.93.54/fds/transaction-api
+    digest: sha256:a7093136d12640da00570c18ed278eacbb8e9ba3637c7d509571346eac45cc33
+  - name: fds-engine
+    newName: 10.1.93.54/fds/fds-engine
+    digest: sha256:5e2a081cd51a957c3fad038b3eab07884c446ea3c2a814a905e3f41c24f67369
+patches:
+  # Phase 1 이미지의 고정 UID/GID와 Harbor pull secret (OpenShift overlay에는 넣지 않는다)
+  - path: deployment-p1.yaml
+    target:
+      kind: Deployment
+  # 운영 fds-engine Service 포트 이름은 grpc다(실제 호출은 HTTP). 운영 재현을 위해서만 덮어쓴다.
+  - target:
+      kind: Service
+      name: fds-engine
+    patch: |-
+      - op: replace
+        path: /spec/ports/0/name
+        value: grpc
+  # transaction-api: edge01 진입, Prometheus 수집, db01, kube-dns (운영 객체의 규칙 순서 그대로)
+  - target:
+      kind: NetworkPolicy
+      name: transaction-api-allow
+    patch: |-
+      - op: add
+        path: /spec/ingress
+        value:
+          - from:
+              - ipBlock:
+                  cidr: 10.1.93.50/32
+            ports:
+              - port: 8000
+                protocol: TCP
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring-api
+                podSelector:
+                  matchLabels:
+                    app: prometheus
+            ports:
+              - port: 9091
+                protocol: TCP
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.1.93.55/32
+          ports:
+            - port: 5432
+              protocol: TCP
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: kube-system
+              podSelector:
+                matchLabels:
+                  k8s-app: kube-dns
+          ports:
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+  # fds-engine: Prometheus 수집, kube-dns (DB egress 없음)
+  - target:
+      kind: NetworkPolicy
+      name: fds-engine-allow
+    patch: |-
+      - op: add
+        path: /spec/ingress/-
+        value:
+          from:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: monitoring-api
+              podSelector:
+                matchLabels:
+                  app: prometheus
+          ports:
+            - port: 9090
+              protocol: TCP
+      - op: add
+        path: /spec/egress
+        value:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - port: 53
+                protocol: UDP
+              - port: 53
+                protocol: TCP

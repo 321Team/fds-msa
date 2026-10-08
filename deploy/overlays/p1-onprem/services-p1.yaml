@@ -1,0 +1,52 @@
+# Phase 1 환경 전용 Service: edge01 진입용 NodePort와 Prometheus 수집 대상용 메트릭 Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-api-nodeport
+  labels:
+    app: transaction-api
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: transaction-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      nodePort: 30080
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-api-metrics
+  labels:
+    app: transaction-api
+    role: metrics-discovery
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-api
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fds-engine-metrics
+  labels:
+    app: fds-engine
+    role: metrics-discovery
+spec:
+  type: ClusterIP
+  selector:
+    app: fds-engine
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
