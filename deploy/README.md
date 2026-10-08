@@ -41,6 +41,15 @@ sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf diff -k deploy/overlays/p1-
 - client-side diff는 `kubectl.kubernetes.io/last-applied-configuration` 주석 갱신을 차이로 표시할 수 있습니다(위 사유). 그 외 차이가 없으면 spec 동등으로 판정하고, 주석 차이는 사유와 함께 기록합니다. diff를 0으로 만들려고 운영을 바꾸지 않습니다.
 - Secret은 참조만 하므로 diff·로그에 Secret 값이 나오지 않습니다.
 
+결과(2026-10-08 14:58 KST, control01 `~/p43-diff-20261008T145807`, 커밋 `f618377`의 `git archive` 묶음 SHA-256 `0e778f37ea92d83b2e979595c4a3faf70bc7f8d636979cde65de795907f79141`):
+
+| 항목 | 값 |
+|---|---|
+| `kubectl kustomize` | rc=0, 객체 12개, `rendered.yaml` SHA-256 `58fafcf70f2818c21d40db0bc9c02c66003bde5ac46e56fb39562d67aa6f0519` |
+| `kubectl diff -k` | rc=0, stdout 0줄, stderr 0줄 (주석 차이도 없음) |
+
+범위: 렌더된 12개 객체가 운영과 같다는 뜻입니다. fds-app에만 있는 다른 객체(Secret 등)는 비교 대상이 아닙니다.
+
 ## 다음 (이 디렉터리에 추가 예정, 아직 없음)
 
 - `components/openshift`: Route(경로 `/api`·`/readyz`만, `/metrics` 비노출), openshift-dns(53·5353)·라우터 허용 NetworkPolicy
