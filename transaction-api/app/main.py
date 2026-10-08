@@ -4,8 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response as StarletteResponse
+from prometheus_client import Counter
 
 from .db import async_session, db_ping, transactions
 from .context import build_context
@@ -47,11 +46,6 @@ async def ready(response: Response):
         logger.error("readiness check failed: %s", e)
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not ready"}
-
-
-@app.get("/metrics")
-async def metrics():
-    return StarletteResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/api/v1/transactions", status_code=201)

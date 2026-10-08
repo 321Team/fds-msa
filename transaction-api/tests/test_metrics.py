@@ -21,6 +21,7 @@ os.environ.setdefault(
 )
 
 from fastapi.testclient import TestClient
+from prometheus_client.parser import text_string_to_metric_families
 
 from app.main import app as main_app, TRANSACTION_SAVE_SUCCESS_TOTAL
 from app.metrics import metrics_app
@@ -50,4 +51,5 @@ def test_metrics_app_shares_registry_with_main_app():
     assert after == before + 1
 
     body = metrics_client.get("/metrics").text
-    assert "transaction_save_success_total" in body
+    samples = {s.name: s.value for f in text_string_to_metric_families(body) for s in f.samples}
+    assert samples["transaction_save_success_total"] == after

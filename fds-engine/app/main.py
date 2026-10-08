@@ -6,8 +6,7 @@ DB 의존성 없음 → /health 하나로 liveness/readiness 겸용.
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response
+from prometheus_client import Counter
 from pydantic import BaseModel, Field
 
 from .rules import evaluate_all
@@ -51,11 +50,6 @@ async def health():
 async def ready():
     # fds-engine은 외부 의존성 없음 — livez와 동일 로직, readiness probe용 별도 경로
     return {"status": "ok"}
-
-
-@app.get("/metrics")
-async def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/evaluate")
