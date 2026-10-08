@@ -142,7 +142,7 @@ emptyDir라 남는 볼륨이 없습니다. readback 출력은 증적에 보존�
 kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.yaml
 ```
 
-정적 시험: `tools/tests/test_deploy_openshift_labdb.py`. 실제 PostgreSQL에 schema 스크립트를 적용하는 시험은 `initdb`가 있는 CI Ubuntu 러너에서 실행됩니다. 앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스, 깨진 SQL이면 종료·롤백을 확인합니다.
+정적 시험: `tools/tests/test_deploy_openshift_labdb.py`. `kubectl kustomize` 렌더 시험(p1-onprem 12개, render-check 16개)과 실제 PostgreSQL에 schema 스크립트를 적용하는 시험은 `initdb`가 있는 CI Ubuntu 러너에서 실행됩니다. 앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스, 깨진 SQL이면 종료·롤백을 확인합니다.
 
 ## 다음 (아직 없음)
 

@@ -96,6 +96,54 @@ class OpenShiftComponentTests(unittest.TestCase):
             self.assertNotIn(banned, text)
 
 
+class KustomizeRenderTests(unittest.TestCase):
+    """실제 kustomize로 렌더한다(클러스터 접속 없음). kubectl이 있는 CI Ubuntu 러너에서 실행."""
+
+    def render(self, overlay):
+        kubectl = shutil.which("kubectl")
+        if not kubectl:
+            self.skipTest("kubectl 없음 — CI Ubuntu 러너에서 실행")
+        done = subprocess.run([kubectl, "kustomize", str(overlay)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return [d for d in yaml.safe_load_all(done.stdout) if d]
+
+    def test_p1_onprem_renders_twelve_objects(self):
+        docs = self.render(DEPLOY / "overlays" / "p1-onprem")
+        self.assertEqual(len(docs), 12)
+        self.assertTrue(all(d["metadata"]["namespace"] == "fds-app" for d in docs))
+
+    def test_openshift_render_check_composes_base_and_components(self):
+        docs = self.render(CHECK)
+        kinds = sorted(f"{d['kind']}/{d['metadata']['name']}" for d in docs)
+        cm = next(d["metadata"]["name"] for d in docs if d["kind"] == "ConfigMap")
+        self.assertRegex(cm, r"^fds-lab-db-schema-[a-z0-9]{10}$")
+        self.assertEqual(kinds, sorted([
+            "ServiceAccount/transaction-api-sa", "Deployment/transaction-api", "Service/transaction-api",
+            "ServiceAccount/fds-engine-sa", "Deployment/fds-engine", "Service/fds-engine",
+            "NetworkPolicy/default-deny-all", "NetworkPolicy/transaction-api-allow", "NetworkPolicy/fds-engine-allow",
+            "Route/transaction-api-api", "Route/transaction-api-readyz",
+            "ServiceAccount/fds-lab-db-sa", "Deployment/fds-lab-db", "Service/fds-lab-db",
+            "NetworkPolicy/fds-lab-db-allow", f"ConfigMap/{cm}"]))
+        self.assertTrue(all(d["metadata"]["namespace"] == "fds-render-check" for d in docs))
+        by = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+        db_pod = by[("Deployment", "fds-lab-db")]["spec"]["template"]["spec"]
+        self.assertEqual(next(v for v in db_pod["volumes"] if v["name"] == "schema")["configMap"]["name"], cm)
+        self.assertRegex(db_pod["containers"][0]["image"],
+                         r"^registry\.access\.redhat\.com/rhel9/postgresql-16@sha256:[0-9a-f]{64}$")
+        for name in ("transaction-api", "fds-engine"):
+            image = by[("Deployment", name)]["spec"]["template"]["spec"]["containers"][0]["image"]
+            self.assertRegex(image, rf"/fds/{name}@sha256:[0-9a-f]{{64}}$")
+        rendered_nps = {n: by[("NetworkPolicy", n)] for k, n in by if k == "NetworkPolicy"}
+        self.assertEqual(rendered_nps, rendered_policies_with_namespace("fds-render-check"))
+
+
+def rendered_policies_with_namespace(ns):
+    nps = rendered_policies()
+    for d in nps.values():
+        d["metadata"]["namespace"] = ns
+    return nps
+
+
 class LabDbComponentTests(unittest.TestCase):
     def setUp(self):
         self.docs = load_all(LABDB / "lab-db.yaml")
