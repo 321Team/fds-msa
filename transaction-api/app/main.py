@@ -4,8 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response as StarletteResponse
+from prometheus_client import Counter
 
 from .db import async_session, db_ping, transactions
 from .context import build_context
@@ -49,9 +48,8 @@ async def ready(response: Response):
         return {"status": "not ready"}
 
 
-@app.get("/metrics")
-async def metrics():
-    return StarletteResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+# /metrics는 업무 포트 8000에서 제공하지 않는다. 메트릭은 같은 프로세스의 전용 listener
+# (app/metrics.py, 9091)만 응답한다. 업무 포트 노출은 10/9 evidence#175에서 실제 200으로 확인됐다.
 
 
 @app.post("/api/v1/transactions", status_code=201)

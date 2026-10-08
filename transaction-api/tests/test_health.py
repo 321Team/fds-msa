@@ -43,10 +43,10 @@ def test_readyz_returns_503_when_db_unreachable():
     assert r.json() == {"status": "not ready"}
 
 
-def test_metrics_endpoint_is_exposed():
+def test_metrics_is_not_served_on_business_port():
+    # 메트릭은 전용 listener(app.metrics.metrics_app)만 응답한다(tests/test_metrics.py).
     r = client.get("/metrics")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/plain")
+    assert r.status_code == 404
 
 
 def test_create_transaction_rejects_invalid_transaction_type():

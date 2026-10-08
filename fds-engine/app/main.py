@@ -6,8 +6,7 @@ DB 의존성 없음 → /health 하나로 liveness/readiness 겸용.
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response
+from prometheus_client import Counter
 from pydantic import BaseModel, Field
 
 from .rules import evaluate_all
@@ -53,9 +52,8 @@ async def ready():
     return {"status": "ok"}
 
 
-@app.get("/metrics")
-async def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+# /metrics는 업무 포트 8001에서 제공하지 않는다. 메트릭은 같은 프로세스의 전용 listener
+# (app/metrics.py, 9090)만 응답한다. 업무 포트 노출은 10/9 evidence#175에서 실제 200으로 확인됐다.
 
 
 @app.post("/evaluate")
