@@ -260,13 +260,13 @@ class LabDbComponentTests(unittest.TestCase):
             self.assertEqual(psql("fds_lab", "select tableowner from pg_tables where tablename in "
                                   "('transactions','alembic_version') group by 1").stdout.strip(), "fds_lab")
             cols = psql("fds_lab", "select column_name||':'||data_type||':'||is_nullable from information_schema.columns "
-                        "where table_name='transactions' order by ordinal_position").stdout.split()
+                        "where table_name='transactions' order by ordinal_position").stdout.splitlines()
             self.assertEqual(cols, [
                 "transaction_id:text:NO", "account_id:text:NO", "amount:numeric:NO", "currency:text:NO",
                 "transaction_type:text:NO", "source_ip:text:YES", "occurred_at:timestamp with time zone:NO",
                 "received_at:timestamp with time zone:NO", "fds_detected:boolean:YES", "fds_rules:jsonb:YES",
                 "fds_evaluation_skipped:boolean:NO"])
-            idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1").stdout.split()
+            idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1").stdout.splitlines()
             self.assertEqual(idx, ["idx_transactions_account_id", "idx_transactions_account_type_time",
                                    "transactions_pkey"])
             # 앱 계정으로 저장·조회가 되는지(이력 의존 Rule의 전제)
