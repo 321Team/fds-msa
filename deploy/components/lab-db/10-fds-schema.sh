@@ -9,6 +9,11 @@ FDS_SCHEMA_HEAD="${FDS_SCHEMA_HEAD:-0003}"
 
 fds_schema_fail() {
   echo "fds-lab-db: $1 — 컨테이너를 종료합니다" >&2
+  # 소켓 전용 임시 서버를 정상 종료해 postmaster.pid를 남기지 않는다. 남으면 같은 emptyDir로 재시작할 때
+  # "another server might be running"으로 서버가 뜨지 않아, 고친 schema로도 복구되지 않는다.
+  if [ -n "${PGDATA:-}" ]; then
+    pg_ctl stop -D "$PGDATA" -m fast -w > /dev/null 2>&1 || echo "fds-lab-db: 임시 서버 정상 종료 실패" >&2
+  fi
   exit 1
 }
 
