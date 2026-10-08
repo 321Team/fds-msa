@@ -105,6 +105,14 @@ class LabDbImageStartContract(unittest.TestCase):
         done = docker("logs", name, check=False)
         return done.stdout + done.stderr
 
+    def test_image_is_postgresql_16_non_root(self):
+        version = docker("run", "--rm", "--network", "none", "--user", UID, "--entrypoint", "postgres", self.image,
+                         "--version").stdout.strip()
+        print("postgres:", version)
+        self.assertRegex(version, r"^postgres \(PostgreSQL\) 16\.\d+", "PG17 금지 — db01과 같은 16 계열")
+        user = docker("image", "inspect", "--format", "{{.Config.User}}", self.image).stdout.strip()
+        self.assertNotIn(user, ("", "0", "root"))
+
     def test_image_start_order_matches_hook_choice(self):
         script = docker("run", "--rm", "--network", "none", "--entrypoint", "cat", self.image,
                         "/usr/bin/run-postgresql").stdout

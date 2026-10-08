@@ -129,7 +129,7 @@ class KustomizeRenderTests(unittest.TestCase):
         db_pod = by[("Deployment", "fds-lab-db")]["spec"]["template"]["spec"]
         self.assertEqual(next(v for v in db_pod["volumes"] if v["name"] == "schema")["configMap"]["name"], cm)
         self.assertRegex(db_pod["containers"][0]["image"],
-                         r"^registry\.access\.redhat\.com/rhel9/postgresql-16@sha256:[0-9a-f]{64}$")
+                         r"^quay\.io/sclorg/postgresql-16-c9s@sha256:[0-9a-f]{64}$")
         for name in ("transaction-api", "fds-engine"):
             image = by[("Deployment", name)]["spec"]["template"]["spec"]["containers"][0]["image"]
             self.assertRegex(image, rf"/fds/{name}@sha256:[0-9a-f]{{64}}$")
