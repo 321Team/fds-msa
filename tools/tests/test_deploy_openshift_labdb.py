@@ -269,11 +269,14 @@ class LabDbComponentTests(unittest.TestCase):
             idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1").stdout.splitlines()
             self.assertEqual(idx, ["idx_transactions_account_id", "idx_transactions_account_type_time",
                                    "transactions_pkey"])
-            # 앱 계정으로 저장·조회가 되는지(이력 의존 Rule의 전제)
-            ins = psql("fds_lab", "set role fds_lab; insert into transactions (transaction_id, account_id, amount, "
-                       "transaction_type, occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
-                       "returning fds_evaluation_skipped")
-            self.assertEqual((ins.returncode, ins.stdout.splitlines()), (0, ["f", "INSERT 0 1"]), ins.stderr)
+            # 앱 계정으로 직접 접속해 저장·조회가 되는지(이력 의존 Rule의 전제)
+            ins = subprocess.run([os.path.join(bindir, "psql"), "-X", "-q", "-U", "fds_lab", "-d", "fds_lab", "-v",
+                                  "ON_ERROR_STOP=1", "-At", "-c",
+                                  "insert into transactions (transaction_id, account_id, amount, transaction_type, "
+                                  "occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
+                                  "returning fds_evaluation_skipped"], capture_output=True, text=True, env=env)
+            self.assertEqual((ins.returncode, ins.stdout.splitlines()), (0, ["f"]), ins.stderr)
+            self.assertEqual(psql("fds_lab", "select count(*) from transactions").stdout.strip(), "1")
 
             # 실패 경로: 깨진 SQL이면 0이 아닌 코드로 끝나고, 부분 적용 없이 롤백된다
             self.assertEqual(psql("postgres", "create database fds_bad owner fds_lab").returncode, 0)
