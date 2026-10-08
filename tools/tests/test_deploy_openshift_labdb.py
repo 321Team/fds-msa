@@ -316,5 +316,123 @@ class LabDbComponentTests(unittest.TestCase):
             self.assertIn("예상하지 못한 schema 상태: VERSION:0002", older.stderr)
 
 
+FAKE_OC = r'''#!/usr/bin/env bash
+# 시험용 oc: 인자를 기록하고 FAKE_MODE에 따라 응답한다. 클러스터에 접속하지 않는다.
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$*" in
+  *" delete "*) exit 0 ;;
+  *" get deployment,replicaset,pod,"*)
+    case "$FAKE_MODE" in
+      sa_left) echo "serviceaccount/fds-lab-db-sa"; exit 0 ;;
+      forbidden) echo 'Error from server (Forbidden): pods is forbidden' >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+  *" get networkpolicy transaction-api-allow "*)
+    case "$FAKE_MODE" in
+      policy_forbidden) echo 'Error from server (Forbidden)' >&2; exit 1 ;;
+      policy_left) printf 'spec:\n  egress:\n  - to:\n    - podSelector:\n        matchLabels:\n          app: fds-lab-db\n' ;;
+      *) printf 'spec:\n  egress:\n  - to:\n    - ipBlock:\n        cidr: 10.1.93.55/32\n' ;;
+    esac
+    exit 0 ;;
+  *" get secret fds-lab-db-credentials "*)
+    case "$*" in
+      *POSTGRESQL_USER*) printf 'ZmRzX2xhYg==' ;; *POSTGRESQL_PASSWORD*) printf 'c2VjcmV0' ;; *) printf 'ZmRzX2xhYg==' ;;
+    esac
+    exit 0 ;;
+  *" create secret "*) printf 'apiVersion: v1\nkind: Secret\n' ; exit 0 ;;
+  *" rollout restart "*) [ "$FAKE_MODE" = restart_fail ] && exit 1; exit 0 ;;
+  *) cat > /dev/null 2>&1 < /dev/null; exit 0 ;;
+esac
+'''
+
+
+def readme_block(after):
+    """README에서 `after` 문구 뒤 첫 bash 코드 블록을 꺼낸다(문서 명령 그대로 시험)."""
+    text = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    start = text.index("```bash\n", text.index(after)) + len("```bash\n")
+    return text[start:text.index("\n```", start)]
+
+
+class LabDbRunbookCommandTests(unittest.TestCase):
+    """리뷰 B3·B4: README 명령이 승인 context·namespace에만 작용하고, 정리 판정이 잔여·조회 오류를 구분하는지."""
+
+    def setUp(self):
+        self.bash = shutil.which("bash")
+        if not self.bash or os.name == "nt":
+            self.skipTest("bash 필요 — CI Ubuntu 러너에서 실행")
+        self.root = Path(tempfile.mkdtemp(prefix="runbook"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        (bindir / "oc").write_text(FAKE_OC, encoding="utf-8")
+        os.chmod(bindir / "oc", 0o755)
+        self.log = self.root / "oc.log"
+        self.env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}", FAKE_LOG=str(self.log))
+
+    def run_block(self, block, mode="ok", **extra):
+        work = self.root / f"w-{mode}-{len(list(self.root.iterdir()))}"
+        work.mkdir()
+        env = dict(self.env, FAKE_MODE=mode, **extra)
+        return subprocess.run([self.bash, "-c", block], cwd=work, capture_output=True, text=True, env=env)
+
+    def calls(self):
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+    def assert_scoped(self):
+        calls = self.calls()
+        self.assertTrue(calls)
+        for c in calls:
+            self.assertIn("--context ctx-approved -n ns-approved", c, c)
+
+    def test_every_lab_db_oc_command_in_readme_is_scoped(self):
+        text = (DEPLOY / "README.md").read_text(encoding="utf-8")
+        section = text[text.index("## 시험 DB"):text.index("### 아직 확인하지 못한 것")]
+        oc_lines = [ln.strip() for ln in section.splitlines() if ln.strip().startswith("oc ")]
+        self.assertTrue(oc_lines)
+        for line in oc_lines:
+            self.assertRegex(line, r'^oc --context "\$CTX"( -n "\$NS")? ', line)
+        self.assertIn('OC="oc --context $CTX -n $NS"', section)
+        self.assertNotIn("get all", section, "`all`은 ServiceAccount를 포함하지 않는다")
+        self.assertNotRegex(section, r"\| *grep -c", "조회 오류와 '없음'을 구분할 수 없는 파이프 판정 금지")
+
+    def test_cleanup_distinguishes_four_cases(self):
+        block = readme_block("### 정리와 readback")
+        base = dict(CTX="ctx-approved", NS="ns-approved")
+        ok = self.run_block(block, "ok", **base)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertIn("CLEANUP_OK", ok.stdout)
+        self.assert_scoped()
+        for mode, expect in (("sa_left", "STOP: 잔여 자원 있음"), ("forbidden", "STOP: 잔여 조회 실패"),
+                             ("policy_forbidden", "STOP: 정책 조회 실패"), ("policy_left", "STOP: 잔여 규칙 있음")):
+            done = self.run_block(block, mode, **base)
+            self.assertNotEqual(done.returncode, 0, mode)
+            self.assertIn(expect, done.stdout, mode)
+            self.assertNotIn("CLEANUP_OK", done.stdout, mode)
+        unset = self.run_block(block, "ok", NS="ns-approved")
+        self.assertNotEqual(unset.returncode, 0)
+        self.assertIn("승인된 context 필요", unset.stderr)
+
+    def test_rollback_targets_approved_namespace_and_stops_on_restart_failure(self):
+        block = readme_block("**전환 실패 복구**")
+        base = dict(CTX="ctx-approved", NS="ns-approved", PREV_OVERLAY="overlays/prev")
+        ok = self.run_block(block, "ok", **base)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertIn("ROLLBACK_APPLIED", ok.stdout)
+        self.assertNotIn("c2VjcmV0", ok.stdout + ok.stderr)
+        self.assertNotIn("secret", ok.stdout + ok.stderr, "복호화한 비밀번호를 출력하지 않는다")
+        self.assert_scoped()
+        steps = [key for c in self.calls() for key in ("create secret", "apply -k", "rollout restart", "rollout status")
+                 if key in c]
+        self.assertEqual(steps, ["create secret", "apply -k", "rollout restart", "rollout status"],
+                         "Secret 복구 → overlay → restart → status 순서")
+        failed = self.run_block(block, "restart_fail", **base)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("STOP: restart 실패", failed.stdout)
+        self.assertNotIn("ROLLBACK_APPLIED", failed.stdout)
+        missing = self.run_block(block, "ok", CTX="ctx-approved", NS="ns-approved")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("이전 revision의 overlay 경로 필요", missing.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,4 +47,3 @@ CREATE INDEX idx_transactions_account_type_time ON transactions (account_id, tra
 UPDATE alembic_version SET version_num='0003' WHERE alembic_version.version_num = '0002';
 
 COMMIT;
-

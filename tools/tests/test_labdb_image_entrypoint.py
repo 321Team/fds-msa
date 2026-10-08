@@ -1,4 +1,4 @@
-"""고정 digest rhel9/postgresql-16 이미지의 실제 시작 경로로 lab-db schema 훅을 확인한다(격리 컨테이너, 클러스터 없음).
+"""고정 digest sclorg postgresql-16-c9s 이미지의 실제 시작 경로로 lab-db schema 훅을 확인한다(격리 컨테이너, 클러스터 없음).
 
 FDS_LABDB_IMAGE_IT=1 이고 docker가 있을 때만 실행한다(workflow `labdb-image-it`). 이미지 pull 외 네트워크를 쓰지 않는다.
 매니페스트와 같은 조건으로 띄운다: 임의 UID(gid 0), 읽기 전용 루트, capability 전부 제거, no-new-privileges,

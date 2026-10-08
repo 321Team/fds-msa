@@ -1,4 +1,4 @@
-# rhel9/postgresql-16 이미지의 postgresql-start 훅. run-postgresql이 계정·DB 생성(create_users) 뒤,
+# sclorg postgresql-16 이미지(quay.io/sclorg/postgresql-16-c9s)의 postgresql-start 훅. run-postgresql이 계정·DB 생성(create_users) 뒤,
 # 서버를 소켓 전용(-h '')으로 띄운 상태에서 **매 시작마다** source한다. 이 훅이 끝나야 TCP로 서비스한다.
 # 업무 schema(fds-schema.sql = Alembic head offline SQL)를 확인한다:
 #   - public에 테이블이 하나도 없으면 앱 계정 소유로 한 트랜잭션에 적용하고 다시 확인

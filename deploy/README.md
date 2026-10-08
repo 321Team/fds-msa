@@ -83,34 +83,76 @@ Route 음성 시험(실제 클러스터에서 수행, 아직 NOT RUN): 같은 ho
 | 자원 | 요청 100m/256Mi, 제한 500m/512Mi, replicas 1 |
 | owner·만료 | `fds.321team/owner`·`fds.321team/expires` 주석. 실제 overlay가 값을 넣습니다 |
 
+### 대상 고정 — 모든 명령에 `--context`·`-n`
+
+아래 명령은 `oc`의 현재 프로젝트에 의존하지 않습니다. 공용 Lab에서는 현재 프로젝트가 다른 팀 namespace일 수 있기 때문입니다. 실행자는 작업 시작 때 승인된 cluster context와 namespace를 정해 실행 기록 첫머리에 남깁니다.
+
+```bash
+CTX=<승인된 context>
+NS=<승인된 namespace>
+oc --context "$CTX" whoami --show-context
+oc --context "$CTX" get namespace "$NS" -o name
+```
+
+아래 블록은 모두 서브셸 `( … )`입니다. 단계가 실패하면 `exit 1`로 그 블록만 끝나고, 터미널은 닫히지 않습니다. `CTX`·`NS`가 비어 있으면 시작하지 않습니다.
+
 ### 자격증명 Secret (저장소 밖에서 생성, 값 출력 금지)
 
 ```bash
-NS=<namespace>
-PW=$(openssl rand -hex 24)
-oc -n "$NS" create secret generic fds-lab-db-credentials \
-  --from-literal=POSTGRESQL_USER=fds_lab --from-literal=POSTGRESQL_PASSWORD="$PW" --from-literal=POSTGRESQL_DATABASE=fds_lab
-oc -n "$NS" create secret generic transaction-api-db-credentials \
-  --from-literal=DATABASE_URL="postgresql+asyncpg://fds_lab:${PW}@fds-lab-db:5432/fds_lab"
-unset PW
-oc -n "$NS" label secret fds-lab-db-credentials app.kubernetes.io/part-of=fds-lab-db
-oc -n "$NS" label secret transaction-api-db-credentials fds.321team/db-target=test-db
+(
+  : "${CTX:?승인된 context 필요}"; : "${NS:?승인된 namespace 필요}"
+  PW=$(openssl rand -hex 24)
+  oc --context "$CTX" -n "$NS" create secret generic fds-lab-db-credentials \
+    --from-literal=POSTGRESQL_USER=fds_lab --from-literal=POSTGRESQL_PASSWORD="$PW" \
+    --from-literal=POSTGRESQL_DATABASE=fds_lab || { echo "STOP: 시험 DB Secret 생성 실패"; exit 1; }
+  oc --context "$CTX" -n "$NS" create secret generic transaction-api-db-credentials \
+    --from-literal=DATABASE_URL="postgresql+asyncpg://fds_lab:${PW}@fds-lab-db:5432/fds_lab" \
+    || { echo "STOP: 앱 Secret 생성 실패"; exit 1; }
+  unset PW
+  oc --context "$CTX" -n "$NS" label secret fds-lab-db-credentials app.kubernetes.io/part-of=fds-lab-db || exit 1
+  oc --context "$CTX" -n "$NS" label secret transaction-api-db-credentials fds.321team/db-target=test-db || exit 1
+)
 ```
 
 `transaction-api-db-credentials`에는 `part-of=fds-lab-db`를 붙이지 않습니다. 시험 DB를 정리해도 앱 Secret 이름은 남고, #47 전환 때 값과 `db-target` 라벨만 바뀝니다.
 
 ### 정리와 readback
 
-1. 시험 DB를 뺀 overlay를 먼저 apply합니다. transaction-api의 시험 DB egress 규칙이 사라집니다.
-2. 시험 DB 자원을 지웁니다.
+1. 시험 DB를 뺀 overlay를 먼저 apply합니다(`oc --context "$CTX" -n "$NS" apply -k <overlay>`). transaction-api의 시험 DB egress 규칙이 사라집니다. overlay의 namespace가 `$NS`와 다르면 `oc`가 거부하므로 대상 확인도 됩니다.
+2. 아래 블록을 실행합니다. 각 단계의 원본 출력과 rc를 파일로 남기고, 조회 결과와 판정을 분리합니다.
 
 ```bash
-oc -n "$NS" delete deployment,service,serviceaccount,networkpolicy,configmap,secret -l app.kubernetes.io/part-of=fds-lab-db
-oc -n "$NS" get all,configmap,secret,networkpolicy -l app.kubernetes.io/part-of=fds-lab-db   # 기대: No resources found
-oc -n "$NS" get networkpolicy transaction-api-allow -o yaml | grep -c fds-lab-db                # 기대: 0
+(
+  : "${CTX:?승인된 context 필요}"; : "${NS:?승인된 namespace 필요}"
+  oc --context "$CTX" -n "$NS" delete deployment,service,serviceaccount,networkpolicy,configmap,secret     -l app.kubernetes.io/part-of=fds-lab-db > cleanup.delete.txt 2> cleanup.delete.err
+  echo $? > cleanup.delete.rc
+  [ "$(cat cleanup.delete.rc)" = 0 ] || { echo "STOP: 삭제 명령 실패"; exit 1; }
+
+  # 삭제 대상과 그 하위 자원(ReplicaSet·Pod)을 kind로 모두 적는다. `all`은 ServiceAccount 등을 포함하지 않는다.
+  oc --context "$CTX" -n "$NS" get deployment,replicaset,pod,service,serviceaccount,configmap,secret,networkpolicy     -l app.kubernetes.io/part-of=fds-lab-db -o name > cleanup.remaining.txt 2> cleanup.remaining.err
+  echo $? > cleanup.remaining.rc
+  [ "$(cat cleanup.remaining.rc)" = 0 ] || { echo "STOP: 잔여 조회 실패(권한·API 오류)"; exit 1; }
+  [ -s cleanup.remaining.txt ] && { echo "STOP: 잔여 자원 있음"; cat cleanup.remaining.txt; exit 1; }
+
+  # 조회 성공(rc 0)을 확인한 뒤에만 내용을 판정한다. grep rc 1 = 일치 없음, 0 = 잔여 규칙, 2 이상 = 검사 오류.
+  oc --context "$CTX" -n "$NS" get networkpolicy transaction-api-allow -o yaml     > cleanup.api-policy.yaml 2> cleanup.api-policy.err
+  echo $? > cleanup.api-policy.rc
+  [ "$(cat cleanup.api-policy.rc)" = 0 ] || { echo "STOP: 정책 조회 실패"; exit 1; }
+  grep -c fds-lab-db cleanup.api-policy.yaml > cleanup.api-policy.match
+  echo $? > cleanup.api-policy.match.rc
+  [ "$(cat cleanup.api-policy.match.rc)" = 1 ] || { echo "STOP: 잔여 규칙 있음 또는 검사 오류"; exit 1; }
+  echo "CLEANUP_OK"
+)
 ```
 
-emptyDir라 남는 볼륨이 없습니다. readback 출력은 증적에 보존합니다.
+| 경우 | 결과 |
+|---|---|
+| 모두 삭제됨 | `CLEANUP_OK` |
+| 일부 자원 남음(ServiceAccount만 남은 경우 포함) | `STOP: 잔여 자원 있음` + 이름 목록 |
+| 조회 Forbidden·API 오류 | `STOP: … 조회 실패`(`*.rc` ≠ 0, `*.err`에 원인) |
+| transaction-api 정책에 시험 DB 규칙 남음 | `STOP: 잔여 규칙 있음 또는 검사 오류` |
+
+emptyDir라 남는 볼륨이 없습니다. `transaction-api-db-credentials`는 삭제 라벨이 없어 대상이 아닙니다. `cleanup.*` 파일(값 없음)은 증적에 보존합니다.
 
 ### #47 전환 계약 — TEST_DB → ONPREM_DB
 
@@ -119,17 +161,36 @@ emptyDir라 남는 볼륨이 없습니다. readback 출력은 증적에 보존�
 | 0. 기록 | 전환 전 manifest revision(fds-msa SHA), 렌더 SHA-256, Secret **이름**·`db-target` 라벨, NetworkPolicy를 기록합니다 | — |
 | 1. 선행 | #47 A1·A2(db01 출발지 관측·pg_hba/방화벽 변경)가 끝나야 시작합니다 | 시작하지 않음 |
 | 2. 앱 Secret 교체 | `transaction-api-db-credentials`를 db01 접속값(TLS)으로 교체, 라벨 `db-target=onprem-db`. 이때 `fds-lab-db-credentials`와 시험 DB는 남겨 둡니다 | 3단계로 가지 않고 이전 값으로 복구 |
-| 3. overlay 교체 | 시험 DB를 뺀 overlay + db01 egress(Relay 경유 `10.1.93.55/32:5432`, 별도 PR)를 apply하고, transaction-api를 `rollout restart` 후 `rollout status`까지 확인 | 아래 "전환 실패 복구" 순서 |
+| 3. overlay 교체 | 시험 DB를 뺀 overlay + db01 egress(Relay 경유 `10.1.93.55/32:5432`, 별도 PR)를 같은 `CTX`·`NS`로 apply하고, `oc --context "$CTX" -n "$NS" rollout restart deployment/transaction-api` 후 `rollout status deployment/transaction-api --timeout=<작업창 상한>`까지 확인 | 아래 "전환 실패 복구" 순서 |
 | 4. 새 경로 검증 | 두 앱 Ready, Route `/readyz`, 저장·조회(p2e2e B1), fds-engine → DB 차단, VPN 끊김·복구(#50) | 아래 "전환 실패 복구" 순서 |
 | 5. 시험 DB 정리 | 4단계 통과 뒤에만 위 "정리와 readback"을 수행합니다 | — |
 
 **전환 실패 복구** — `DATABASE_URL`은 env의 `secretKeyRef`라 실행 중인 Pod에는 반영되지 않습니다. 그래서 Secret을 먼저 되돌리고, 그다음 재시작합니다.
 
-1. `transaction-api-db-credentials`를 시험 DB 값과 `db-target=test-db` 라벨로 먼저 복구합니다(`fds-lab-db-credentials`에서 다시 만듭니다. 값은 출력하지 않습니다).
-2. 0단계에 기록한 이전 overlay revision을 재적용합니다.
-3. `oc rollout restart deployment/transaction-api` 후 `oc rollout status`를 확인합니다.
-4. 시험 DB 저장·조회와 두 앱 Ready를 재확인합니다.
-5. 실패하면 중단하고 로그를 보존합니다. 시험 DB는 삭제하지 않습니다.
+```bash
+(
+  : "${CTX:?승인된 context 필요}"; : "${NS:?승인된 namespace 필요}"
+  : "${PREV_OVERLAY:?0단계에 기록한 이전 revision의 overlay 경로 필요}"
+  OC="oc --context $CTX -n $NS"
+  # 1. 앱 Secret을 시험 DB 값으로 먼저 복구한다. 값은 fds-lab-db-credentials에서 읽어 바로 넣고 출력하지 않는다.
+  U=$($OC get secret fds-lab-db-credentials -o jsonpath='{.data.POSTGRESQL_USER}' | base64 -d)
+  P=$($OC get secret fds-lab-db-credentials -o jsonpath='{.data.POSTGRESQL_PASSWORD}' | base64 -d)
+  D=$($OC get secret fds-lab-db-credentials -o jsonpath='{.data.POSTGRESQL_DATABASE}' | base64 -d)
+  [ -n "$U" ] && [ -n "$P" ] && [ -n "$D" ] || { echo "STOP: 시험 DB Secret 읽기 실패"; exit 1; }
+  $OC create secret generic transaction-api-db-credentials     --from-literal=DATABASE_URL="postgresql+asyncpg://${U}:${P}@fds-lab-db:5432/${D}" --dry-run=client -o yaml     | $OC apply -f - || { echo "STOP: 앱 Secret 복구 실패"; exit 1; }
+  unset U P D
+  $OC label secret transaction-api-db-credentials fds.321team/db-target=test-db --overwrite || exit 1
+  # 2. 이전 overlay revision 재적용(overlay namespace가 $NS와 다르면 oc가 거부한다)
+  $OC apply -k "$PREV_OVERLAY" || { echo "STOP: 이전 overlay 재적용 실패"; exit 1; }
+  # 3. env를 다시 읽도록 재시작하고 끝까지 확인한다(상한은 작업창에 맞춘다)
+  $OC rollout restart deployment/transaction-api || { echo "STOP: restart 실패"; exit 1; }
+  $OC rollout status deployment/transaction-api --timeout=180s || { echo "STOP: rollout 미완료"; exit 1; }
+  echo "ROLLBACK_APPLIED"
+)
+```
+
+4. `ROLLBACK_APPLIED`가 나온 뒤에만 시험 DB 저장·조회와 두 앱 Ready를 재확인합니다.
+5. 어느 단계든 `STOP`이면 중단하고 로그를 보존합니다. 저장·조회 판정이나 시험 DB 정리로 넘어가지 않고, 시험 DB는 삭제하지 않습니다.
 
 시험 DB 데이터는 운영 DB(db01)로 옮기지 않습니다. 시험 DB에서 얻은 결과는 `#43 ROSA APP / TEST_DB`로, db01 경로 결과는 `#47/#50 ROSA_HYBRID / ONPREM_DB`로 따로 기록합니다.
 
@@ -154,7 +215,12 @@ kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.ya
 - `kubectl kustomize` 렌더 시험: p1-onprem 12개, render-check 16개
 - 실제 PostgreSQL 훅 시험: 빈 DB 적용(앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스), 재실행 멱등, 깨진 SQL이면 실패·롤백하고 다시 실행해도 실패, 고친 SQL로 복구, 부분 상태·다른 버전이면 중단
 
-`tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`, lab-db 변경 PR에서 실행)는 **고정 digest 이미지를 실제 시작 경로로** 띄웁니다. 조건은 매니페스트와 같게 임의 UID(gid 0), 읽기 전용 루트, `--cap-drop ALL`, `no-new-privileges`, Docker 기본 seccomp이고, 네트워크는 `--network none`입니다. 확인하는 것:
+`tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`, lab-db 변경 PR에서 실행)는 **고정 digest 이미지를 실제 시작 경로로** 띄웁니다. 조건은 임의 UID(gid 0), 읽기 전용 루트, `--cap-drop ALL`, `no-new-privileges`, Docker 기본 seccomp, `--network none`입니다. 컨테이너 보안 설정은 매니페스트와 같게 맞췄지만, 다음은 **다릅니다**.
+- 쓰기 볼륨이 host 디렉터리 `0777`입니다. 실제 클러스터의 emptyDir 소유권, SCC가 배정하는 UID/GID·fsGroup, SELinux는 재현하지 않습니다.
+- CPU·memory 제한이 없습니다.
+- 런타임이 Docker입니다(CRI-O 아님).
+
+이 차이는 Lab·ROSA 실제 기동에서 확인합니다. 현장에서 `0777`이나 anyuid로 우회하지 않습니다. 확인하는 것:
 1. 빈 HOME 첫 기동
 2. 같은 데이터로 재시작
 3. 깨진 SQL이면 Ready 전에 종료하고, 같은 데이터로 다시 시작해도 종료
