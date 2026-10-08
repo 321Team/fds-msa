@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: transaction-api-sa
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-api
+  labels:
+    app: transaction-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: transaction-api
+  template:
+    metadata:
+      labels:
+        app: transaction-api
+    spec:
+      serviceAccountName: transaction-api-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app: transaction-api
+          matchLabelKeys:
+            - pod-template-hash
+      containers:
+        - name: transaction-api
+          image: transaction-api  # overlay의 images:가 레지스트리@digest로 바꾼다
+          ports:
+            - containerPort: 8000
+            - containerPort: 9091
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: transaction-api-db-credentials  # Secret 값은 저장소에 두지 않는다
+                  key: DATABASE_URL
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-api
+  labels:
+    app: transaction-api
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+      protocol: TCP

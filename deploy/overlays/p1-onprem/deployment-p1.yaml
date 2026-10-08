@@ -1,0 +1,13 @@
+# 두 Deployment 공통 Phase 1 값. target이 kind: Deployment라 이름은 무시된다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 999
+      imagePullSecrets:
+        - name: harbor-pull-secret
