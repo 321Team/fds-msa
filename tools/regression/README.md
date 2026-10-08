@@ -80,3 +80,74 @@ from transactions where account_id like 'SIM_rg_<RUN>_%' order by received_at;
 - 운영 `fdsdb`에 시험 거래 최대 25건(정상이면 23건, `SIM_rg_<RUN>_*`)이 남는다. 기능 시험 거래는 보존한다([#11 결정안 5887795557](https://github.com/321Team/fds-project-baseline/issues/11#issuecomment-5887795557)).
 - 부하는 약 1초 동안 25건이다. Deployment·설정은 바꾸지 않는다.
 - 범위 밖: N09(fds-engine 장애 → fail-open)는 CR [#119](https://github.com/321Team/fds-project-baseline/issues/119) 시험으로 따로 한다. 경로는 edge01 → Worker NodePort 직접이다(edge01 upstream 이관 전).
+
+---
+
+# P2-HYB-01·P2-E2E-01 ROSA 회귀 도구 (`p2e2e.py`)
+
+Phase 2 #47→#50 작업창([#50 계획 6051395052](https://github.com/321Team/fds-project-baseline/issues/50#issuecomment-6051395052))에서 ROSA Route로 거래를 보내고 판정한다. `rg.py`(P1, 리뷰 완료)는 Worker NodePort·HTTP·실행 시 기준 생성 구조라 ROSA에 쓸 수 없어서([리뷰 B1 6051518639](https://github.com/321Team/fds-project-baseline/issues/50#issuecomment-6051518639)) 별도 파일로 둔다. `rg.py`는 바꾸지 않는다.
+
+운영 `fdsdb`에 시험 거래를 쓰는 코드라서 ROSA Runtime 전에 독립 코드 리뷰를 받는다(REVIEW_AUTHORITY_POLICY §3). 표준 라이브러리만 쓴다(Python 3.6 이상).
+
+## `rg.py`와 다른 점
+
+| 항목 | `rg.py` (P1) | `p2e2e.py` (P2) |
+|---|---|---|
+| 대상 | Worker 3대 `:30080` HTTP 순환 | 승인 Route 하나, **HTTPS 인증서·호스트 이름 검증**(끄는 옵션 없음). 사설 CA면 `--cafile`, CA SHA-256은 plan에 고정 |
+| 기준 | `run` 때 날짜·계정으로 새로 생성 | `plan`이 네트워크 없이 `criteria.json`을 만들고, `run`은 `--criteria-sha`·도구 SHA-256·CA SHA-256이 모두 같을 때만 실행 |
+| 계정 | `SIM_rg_<RUN>_<ID>` | `SIM_p2_<RUN>_<ID>` |
+| 실행 단위 | 25건 연속 | 사례군(`B1`·`B2`·`B3E`·`B3E-POST`·`B3D-POST`)별. `ledger.jsonl`에 보내기 **전** 기록해 같은 사례군 재전송을 막는다 |
+| 장애 사례 | 없음 | `B3E` fail-open 판정(`201`·`skipped=true`·`fds_detected=null`·`fds_rules=null`) |
+| DB 대조 | `occurred_at` 출력만 | 시간대가 있는 `occurred_at`은 보낸 값과 같은 시각인지 비교, `fds_detected=null` 처리. **사례↔응답↔DB 행 일대일**: 사례 기록 누락·중복, 서로 다른 사례의 같은 Transaction ID, DB 행 ID 중복은 불일치 |
+| 재판정 결속 | 없음 | `judge`·`crosscheck`는 `run_meta.json`의 기준 SHA-256·RUN·Route·도구 SHA-256이 지금 입력과 같을 때만 판정. 다르면 `STOP EVIDENCE_BINDING_MISMATCH`, 기존 `judge.txt`를 덮어쓰지 않음 |
+
+## 사례군
+
+`R04` 시각은 plan의 `--fixture-date`로 고정한다(실행 날짜와 무관). 계정이 RUN마다 새로 생기므로 R01·R07 이력은 그 RUN 안의 요청만 센다.
+
+| 사례군 | 사례 | 기대 | 실행 시점(#50 계획) |
+|---|---|---|---|
+| B1 | P01 deposit 10,000 / P02 3,000,000 / P03 withdrawal 10,000 ×4 / P04 transfer 700,000 ×4 / P05 1,500,000 `fixture 02:30+09:00` | 전부 false / R02 / 4번째 R01 / 4번째 R07 / R04 | 10/21 B1 |
+| B2 | N01~N05(P1과 같음), N06 refund·N07 amount 누락 → 422, **X01 `GET /metrics` → 200이 아니어야 함**(Route 비노출), I01 시간대 없는 시각(INFO) | 전부 false / 422 / 200 아님 / 기록만 | 10/21 B2 |
+| B3E | E01 10,000·E02 3,000,000 | 둘 다 fail-open(검출 안 함, 저장됨) | fds-engine 0개 확인 뒤 |
+| B3E-POST | E03 3,000,000 | R02, `skipped=false` | fds-engine 복구 확인 뒤 |
+| B3D-POST | D01 10,000 | 201, `skipped=false`, 검출 없음 | DB 경로 복구 확인 뒤 |
+
+## 사용
+
+```
+python3 p2e2e.py plan <PLAN_DIR> --run <yyyymmddHHMM> --fixture-date <YYYY-MM-DD> --base-url https://<route-host> [--cafile <CA.pem>]
+python3 p2e2e.py run <PLAN_DIR> <OUT_DIR> --group B1 --criteria-sha <criteria.sha256 값> [--cafile <CA.pem>]
+python3 p2e2e.py judge <PLAN_DIR> <OUT_DIR>
+python3 p2e2e.py crosscheck <PLAN_DIR> <OUT_DIR> <DB_LOG>
+```
+
+- `plan`은 10/20에 만든다. `PLAN_DIR`은 새 폴더여야 하고, `criteria.json`·`criteria.sha256`만 쓴다(요청 없음).
+- `run`은 사례군마다 새 `OUT_DIR`을 쓴다. `run_meta.json`(기준·도구·CA SHA-256, 시작 시각)을 먼저 쓰고 `GET /readyz`(Route)가 200일 때만 보낸다. 결과는 `results.jsonl`·`<ID>.json`·`judge.txt`.
+
+**멈춤 조건(fail-close)** — 위의 것은 모두 요청 전에 확인한다.
+
+| 조건 | 기록 |
+|---|---|
+| `criteria.json` SHA-256 ≠ `--criteria-sha` | `STOP CRITERIA_SHA_MISMATCH` |
+| 실행 중 도구 SHA-256 ≠ plan 때 값 | `STOP TOOL_SHA_MISMATCH` |
+| CA 지정 여부·CA SHA-256이 plan과 다름 | `STOP CAFILE_MISMATCH` |
+| `OUT_DIR`에 파일이 있음 / 같은 사례군을 이미 보냄 | `STOP OUT_DIR_NOT_EMPTY` / `STOP GROUP_ALREADY_SENT`(새 RUN으로 plan 다시) |
+| Route `/readyz` ≠ 200, TLS·연결 실패 | `STOP NOT_READY <코드> <오류>` |
+| 응답 5xx·연결 실패 | `STOP HTTP_<코드> <ID>` |
+| B1·B2에서 `skipped=true`(의도하지 않은 fail-open) | `STOP UNEXPECTED_SKIPPED <ID>` |
+| B3E에서 `skipped=false`(장애 주입이 효과 없음) | `STOP INJECTION_NOT_EFFECTIVE <ID>` |
+
+재시도는 하지 않는다. 종료 코드: 0 = 판정 대상 전부 PASS, 1 = FAIL 있음, 2 = 중단 또는 사용 오류.
+
+## 이 도구 밖에서 확인하는 것
+
+- **장애 주입과 상태 확인:** fds-engine 0개·DB 경로 단절·복구는 도구가 하지 않는다. 주입 상태(engine serving endpoint 부재, 차단 규칙 readback·카운터)와 복구를 먼저 확인한 뒤 해당 사례군을 실행한다.
+- **DB 장애 판정:** `/readyz` 503은 Router 응답이 아니라 Pod에서 관측하고, EndpointSlice의 해당 endpoint `ready=false`로 확인한다. 이 도구는 DB 장애 **중** 요청을 보내지 않는다.
+- **Port 차단·fds-engine → DB 거부:** NetworkPolicy·DB 인증 쪽 수집 명령으로 따로 확인한다.
+- **DB 대조 입력:** `criteria.json`의 `db_query`를 db01에서 `psql -At -F'|'`로 실행한 출력이 `<DB_LOG>`다(시간대 포함 `occurred_at`, null은 빈 칸). fail-open 행의 `fds_rules`는 앱이 JSON `null`로 저장하므로(SQLAlchemy JSONB 기본값), 조회식은 **JSON null과 SQL NULL만** 빈 배열로 바꾼다. 문자열·객체·숫자처럼 배열이 아닌 다른 저장값은 빈 배열로 바꾸지 않고 조회 단계에서 오류(SQLSTATE 22023)로 드러나게 한다(정상 판정으로 숨기지 않음).
+
+## 운영 영향
+
+- 운영 `fdsdb`에 `SIM_p2_<RUN>_*` 시험 거래가 최대 27행 남는다: B1 11 + B2 12(422 두 건은 저장 안 됨, I01 포함) + B3E 2 + B3E-POST 1 + B3D-POST 1. 기능 시험 거래는 보존한다([#11 결정안 5887795557](https://github.com/321Team/fds-project-baseline/issues/11#issuecomment-5887795557)).
+- `selftest`: `../tests/test_regression_p2e2e.py` 16건(가짜 transaction-api, 실제 AWS·ROSA 호출 없음). 평문 서버에 실제 HTTPS로 붙여 TLS 실패 시 POST 0건으로 멈추는지 확인한다. 생성 `db_query`는 PostgreSQL(`initdb`)이 있으면 임시 클러스터에서 실제로 실행해 JSON null·SQL NULL·Rule 배열을 대조하고, 문자열·객체·숫자 저장값은 조회가 실패하는지 확인한다(CI Ubuntu 러너에서 실행, 없으면 그 1건만 skip).
