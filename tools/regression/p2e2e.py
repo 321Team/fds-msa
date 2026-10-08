@@ -98,7 +98,7 @@ def case_table(run_id, fixture_date):
 def db_query(run_id):
     return ("select account_id, transaction_id, transaction_type, amount, fds_detected, fds_evaluation_skipped, "
             "coalesce((select string_agg(r->>'rule_id', ',' order by r->>'rule_id') from jsonb_array_elements("
-            "case when jsonb_typeof(fds_rules) = 'array' then fds_rules else '[]'::jsonb end) r "
+            "coalesce(nullif(fds_rules, 'null'::jsonb), '[]'::jsonb)) r "
             "where (r->>'triggered')::bool), '-'), occurred_at "
             f"from transactions where account_id like 'SIM\\_p2\\_{run_id}\\_%' order by received_at;")
 

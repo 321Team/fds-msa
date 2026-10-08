@@ -145,9 +145,9 @@ python3 p2e2e.py crosscheck <PLAN_DIR> <OUT_DIR> <DB_LOG>
 - **장애 주입과 상태 확인:** fds-engine 0개·DB 경로 단절·복구는 도구가 하지 않는다. 주입 상태(engine serving endpoint 부재, 차단 규칙 readback·카운터)와 복구를 먼저 확인한 뒤 해당 사례군을 실행한다.
 - **DB 장애 판정:** `/readyz` 503은 Router 응답이 아니라 Pod에서 관측하고, EndpointSlice의 해당 endpoint `ready=false`로 확인한다. 이 도구는 DB 장애 **중** 요청을 보내지 않는다.
 - **Port 차단·fds-engine → DB 거부:** NetworkPolicy·DB 인증 쪽 수집 명령으로 따로 확인한다.
-- **DB 대조 입력:** `criteria.json`의 `db_query`를 db01에서 `psql -At -F'|'`로 실행한 출력이 `<DB_LOG>`다(시간대 포함 `occurred_at`, null은 빈 칸). fail-open 행의 `fds_rules`는 앱이 JSON `null`로 저장하므로(SQLAlchemy JSONB 기본값), 조회식은 배열이 아닌 값(JSON null·SQL NULL)을 빈 배열로 바꿔 처리한다.
+- **DB 대조 입력:** `criteria.json`의 `db_query`를 db01에서 `psql -At -F'|'`로 실행한 출력이 `<DB_LOG>`다(시간대 포함 `occurred_at`, null은 빈 칸). fail-open 행의 `fds_rules`는 앱이 JSON `null`로 저장하므로(SQLAlchemy JSONB 기본값), 조회식은 **JSON null과 SQL NULL만** 빈 배열로 바꾼다. 문자열·객체·숫자처럼 배열이 아닌 다른 저장값은 빈 배열로 바꾸지 않고 조회 단계에서 오류(SQLSTATE 22023)로 드러나게 한다(정상 판정으로 숨기지 않음).
 
 ## 운영 영향
 
 - 운영 `fdsdb`에 `SIM_p2_<RUN>_*` 시험 거래가 최대 27행 남는다: B1 11 + B2 12(422 두 건은 저장 안 됨, I01 포함) + B3E 2 + B3E-POST 1 + B3D-POST 1. 기능 시험 거래는 보존한다([#11 결정안 5887795557](https://github.com/321Team/fds-project-baseline/issues/11#issuecomment-5887795557)).
-- `selftest`: `../tests/test_regression_p2e2e.py` 16건(가짜 transaction-api, 실제 AWS·ROSA 호출 없음). 평문 서버에 실제 HTTPS로 붙여 TLS 실패 시 POST 0건으로 멈추는지 확인한다. 생성 `db_query`는 PostgreSQL(`initdb`)이 있으면 임시 클러스터에서 실제로 실행해 JSON null·SQL NULL·Rule 배열을 대조한다(CI Ubuntu 러너에서 실행, 없으면 그 1건만 skip).
+- `selftest`: `../tests/test_regression_p2e2e.py` 16건(가짜 transaction-api, 실제 AWS·ROSA 호출 없음). 평문 서버에 실제 HTTPS로 붙여 TLS 실패 시 POST 0건으로 멈추는지 확인한다. 생성 `db_query`는 PostgreSQL(`initdb`)이 있으면 임시 클러스터에서 실제로 실행해 JSON null·SQL NULL·Rule 배열을 대조하고, 문자열·객체·숫자 저장값은 조회가 실패하는지 확인한다(CI Ubuntu 러너에서 실행, 없으면 그 1건만 skip).

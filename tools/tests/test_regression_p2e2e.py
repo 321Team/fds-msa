@@ -472,8 +472,19 @@ class P2RegressionToolTests(unittest.TestCase):
             self.assertEqual(psql(ins).returncode, 0)
             query = json.loads(Path(plan_dir, "criteria.json").read_text(encoding="utf-8"))["db_query"]
             result = psql(query)
-            old = psql(query.replace("case when jsonb_typeof(fds_rules) = 'array' then fds_rules else '[]'::jsonb end",
+            old = psql(query.replace("coalesce(nullif(fds_rules, 'null'::jsonb), '[]'::jsonb)",
                                      "coalesce(fds_rules, '[]'::jsonb)"))
+            # 리뷰 R4: JSON null·SQL NULL만 보정하고, 배열이 아닌 다른 저장값은 조회 단계에서 거부돼야 한다
+            p01 = next(r for r in normal.rows if r["account"].endswith("_P01"))
+            corrupt = {}
+            for bad_value in ('"corrupted"', '{"rule_id": "R02", "triggered": true}', "42"):
+                self.assertEqual(psql(f"update transactions set fds_rules = '{bad_value}'::jsonb "
+                                      f"where transaction_id = '{p01['tid']}'").returncode, 0)
+                corrupt[bad_value] = psql(query)
+            arr = json.dumps([{"rule_id": x, "triggered": False, "detail": None} for x in ("R01", "R02", "R04", "R07")])
+            self.assertEqual(psql(f"update transactions set fds_rules = '{arr}'::jsonb "
+                                  f"where transaction_id = '{p01['tid']}'").returncode, 0)
+            restored = psql(query)
             log = str(Path(root, "db.log"))
             Path(log).write_text(result.stdout, encoding="utf-8")
             quiet = lambda line: None
@@ -483,6 +494,10 @@ class P2RegressionToolTests(unittest.TestCase):
         self.assertEqual(len(result.stdout.splitlines()), 13)
         self.assertNotEqual(old.returncode, 0)                         # 수정 전 식은 JSON null에서 실패
         self.assertIn("cannot extract elements from a scalar", old.stderr)
+        for bad_value, res in corrupt.items():                        # 문자열·객체·숫자는 PASS 처리되지 않는다
+            self.assertNotEqual(res.returncode, 0, bad_value)
+            self.assertIn("cannot extract elements from", res.stderr, bad_value)
+        self.assertEqual(restored.stdout, result.stdout)
         self.assertEqual((cross_b1, cross_b3e), (0, 0))
 
 
