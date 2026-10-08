@@ -1,0 +1,66 @@
+# OpenShift(공용 OCP Lab·ROSA) 공통 차이 — 외부 진입 Route와 OpenShift 플랫폼 경로 허용.
+# 고정 UID/GID·pull secret을 넣지 않는다: restricted-v2 SCC가 UID를 배정하고, 레지스트리는 #42 결정을 따른다.
+# Route host는 자리표시값이다. 실제 overlay가 클러스터 apps 도메인 아래 host로 바꾼다(두 Route는 같은 host).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - route.yaml
+patches:
+  # transaction-api: OpenShift 라우터 → 8000, openshift-dns
+  - target:
+      kind: NetworkPolicy
+      name: transaction-api-allow
+    patch: |-
+      - op: add
+        path: /spec/ingress
+        value:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    policy-group.network.openshift.io/ingress: ""
+            ports:
+              - port: 8000
+                protocol: TCP
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshift-dns
+              podSelector:
+                matchLabels:
+                  dns.operator.openshift.io/daemonset-dns: default
+          ports:
+            - port: 5353
+              protocol: UDP
+            - port: 5353
+              protocol: TCP
+            - port: 53
+              protocol: UDP
+            - port: 53
+              protocol: TCP
+  # fds-engine: openshift-dns만 (외부 진입·DB 경로 없음)
+  - target:
+      kind: NetworkPolicy
+      name: fds-engine-allow
+    patch: |-
+      - op: add
+        path: /spec/egress
+        value:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: openshift-dns
+                podSelector:
+                  matchLabels:
+                    dns.operator.openshift.io/daemonset-dns: default
+            ports:
+              - port: 5353
+                protocol: UDP
+              - port: 5353
+                protocol: TCP
+              - port: 53
+                protocol: UDP
+              - port: 53
+                protocol: TCP

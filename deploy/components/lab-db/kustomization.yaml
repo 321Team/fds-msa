@@ -1,0 +1,40 @@
+# 시험용 임시 PostgreSQL — 명시적 opt-in. base·p1-onprem·기본 rosa overlay에 넣지 않는다.
+# 용도: #43 TEST_DB(공용 OCP Lab LAB-PRECHECK, ROSA G5 전 판정). 운영 DB 데이터·credential을 복사하지 않는다.
+# 자격증명 Secret 2개(fds-lab-db-credentials, transaction-api-db-credentials)는 저장소 밖에서 만든다(README).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - lab-db.yaml
+images:
+  # sclorg postgresql-16-c9s 20260930 (CentOS Stream 9, manifest list digest). 익명 pull 가능 — CI가 같은 digest로
+  # 실제 시작 경로를 시험한다(test_labdb_image_entrypoint.py). Red Hat rhel9/postgresql-16과 같은 upstream 시작 스크립트.
+  # 임의 UID(restricted-v2)용 이미지. db01(16.14)과 같은 16 계열 — PG17 금지(멘토 요청) 충족. 임시 시험 DB 전용.
+  - name: fds-lab-db
+    newName: quay.io/sclorg/postgresql-16-c9s
+    digest: sha256:d33717fd33c1a4b11afef94568d0c20812a19d62fb8c633fadee1e491e2edd4a
+configMapGenerator:
+  # 업무 schema: 루트 alembic/versions head(0003)의 offline SQL. 이미지의 postgresql-start 훅에서 매 시작마다
+  # 버전을 확인하고, 빈 DB일 때만 적용한다(10-fds-schema.sh).
+  - name: fds-lab-db-schema
+    files:
+      - 10-fds-schema.sh
+      - fds-schema.sql
+    options:
+      labels:
+        app.kubernetes.io/part-of: fds-lab-db
+patches:
+  # transaction-api만 시험 DB 5432로 나간다. fds-engine에는 DB 경로를 주지 않는다.
+  - target:
+      kind: NetworkPolicy
+      name: transaction-api-allow
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - podSelector:
+                matchLabels:
+                  app: fds-lab-db
+          ports:
+            - port: 5432
+              protocol: TCP

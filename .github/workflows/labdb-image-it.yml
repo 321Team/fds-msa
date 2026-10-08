@@ -1,0 +1,43 @@
+name: Lab DB image start contract
+
+# deploy/components/lab-db의 schema 훅을 고정 digest 이미지의 실제 시작 경로로 확인한다.
+# 격리 컨테이너(--network none)만 쓰며 클러스터·레지스트리 push·Secret을 쓰지 않는다.
+# lab-db 관련 파일이 바뀐 main 대상 PR과 수동 실행에서만 돈다.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - deploy/components/lab-db/**
+      - tools/tests/test_labdb_image_entrypoint.py
+      - .github/workflows/labdb-image-it.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: labdb-image-it-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image-it:
+    if: github.repository == '321Team/fds-msa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Install test dependency
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir PyYAML==6.0.2
+
+      - name: Run fixed-digest image start contract
+        env:
+          FDS_LABDB_IMAGE_IT: "1"
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          python3 -m unittest discover -s tools/tests -p 'test_labdb_image_entrypoint.py' -v
