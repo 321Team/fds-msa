@@ -212,7 +212,9 @@ class LabDbComponentTests(unittest.TestCase):
         self.assertIn(f"SET version_num='{head}'", sql)
         self.assertTrue(sql.rstrip().endswith("COMMIT;"))
 
-    # --- 실제 PostgreSQL: 초기화 스크립트가 schema를 앱 계정 소유로 만들고, 실패하면 종료하는지
+    # --- 실제 PostgreSQL: postgresql-start 훅이 빈 DB에만 schema를 적용하고, 재시작에 멱등이며, 이상 상태에서 멈추는지.
+    # 이미지(run-postgresql)는 create_users 뒤에 이 훅을 부르므로 계정·DB를 먼저 만든다. 이미지 자체의 시작 순서는
+    # test_labdb_image_entrypoint.py(고정 digest 컨테이너)가 확인한다.
     @staticmethod
     def _pg_bindir():
         found = shutil.which("initdb")
@@ -221,7 +223,7 @@ class LabDbComponentTests(unittest.TestCase):
         cands = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"))
         return os.path.dirname(cands[-1]) if cands else None
 
-    def test_init_script_applies_schema_as_app_role_on_real_postgresql(self):
+    def test_start_hook_is_idempotent_and_fails_closed_on_real_postgresql(self):
         bindir = self._pg_bindir()
         bash = shutil.which("bash")
         if not bindir or not bash or os.name == "nt":
@@ -241,21 +243,27 @@ class LabDbComponentTests(unittest.TestCase):
             env = dict(os.environ, PGHOST=sock, PGPORT="54330", PGUSER="postgres",
                        PATH=bindir + os.pathsep + os.environ.get("PATH", ""))
 
-            def psql(db, sql):
-                return subprocess.run([os.path.join(bindir, "psql"), "-X", "-d", db, "-v", "ON_ERROR_STOP=1", "-At",
-                                       "-F", "|", "-c", sql], capture_output=True, text=True, env=env)
+            def psql(db, sql, user="postgres"):
+                return subprocess.run([os.path.join(bindir, "psql"), "-X", "-q", "-U", user, "-d", db, "-v",
+                                       "ON_ERROR_STOP=1", "-At", "-F", "|", "-c", sql],
+                                      capture_output=True, text=True, env=env)
 
-            # 이미지가 하는 것처럼 앱 계정과 그 계정 소유 DB를 먼저 만든다
+            def new_db(name):
+                self.assertEqual(psql("postgres", f"create database {name} owner fds_lab").returncode, 0)
+
+            def run_hook(db, sql_path=LABDB / "fds-schema.sql"):
+                return subprocess.run([bash, "-c", f'set -eu; source "{LABDB / "10-fds-schema.sh"}"'],
+                                      capture_output=True, text=True,
+                                      env=dict(env, POSTGRESQL_DATABASE=db, POSTGRESQL_USER="fds_lab",
+                                               FDS_SCHEMA_SQL=str(sql_path)))
+
             self.assertEqual(psql("postgres", "create role fds_lab login").returncode, 0)
-            self.assertEqual(psql("postgres", "create database fds_lab owner fds_lab").returncode, 0)
 
-            def run_init(db, sql_path):
-                return subprocess.run([bash, "-c", f'source "{LABDB / "10-fds-schema.sh"}"'], capture_output=True,
-                                      text=True, env=dict(env, POSTGRESQL_DATABASE=db, POSTGRESQL_USER="fds_lab",
-                                                          FDS_SCHEMA_SQL=str(sql_path)))
-
-            ok = run_init("fds_lab", LABDB / "fds-schema.sql")
-            self.assertEqual(ok.returncode, 0, ok.stderr)
+            # (1) 빈 DB 첫 시작: 앱 계정 소유로 0003 적용
+            new_db("fds_lab")
+            first = run_hook("fds_lab")
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("schema 0003 적용 완료", first.stdout)
             self.assertEqual(psql("fds_lab", "select version_num from alembic_version").stdout.strip(), "0003")
             self.assertEqual(psql("fds_lab", "select tableowner from pg_tables where tablename in "
                                   "('transactions','alembic_version') group by 1").stdout.strip(), "fds_lab")
@@ -266,28 +274,46 @@ class LabDbComponentTests(unittest.TestCase):
                 "transaction_type:text:NO", "source_ip:text:YES", "occurred_at:timestamp with time zone:NO",
                 "received_at:timestamp with time zone:NO", "fds_detected:boolean:YES", "fds_rules:jsonb:YES",
                 "fds_evaluation_skipped:boolean:NO"])
-            idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1").stdout.splitlines()
-            self.assertEqual(idx, ["idx_transactions_account_id", "idx_transactions_account_type_time",
-                                   "transactions_pkey"])
-            # 앱 계정으로 직접 접속해 저장·조회가 되는지(이력 의존 Rule의 전제)
-            ins = subprocess.run([os.path.join(bindir, "psql"), "-X", "-q", "-U", "fds_lab", "-d", "fds_lab", "-v",
-                                  "ON_ERROR_STOP=1", "-At", "-c",
-                                  "insert into transactions (transaction_id, account_id, amount, transaction_type, "
-                                  "occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
-                                  "returning fds_evaluation_skipped"], capture_output=True, text=True, env=env)
+            idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1")
+            self.assertEqual(idx.stdout.splitlines(), ["idx_transactions_account_id",
+                                                       "idx_transactions_account_type_time", "transactions_pkey"])
+            ins = psql("fds_lab", "insert into transactions (transaction_id, account_id, amount, transaction_type, "
+                       "occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
+                       "returning fds_evaluation_skipped", user="fds_lab")
             self.assertEqual((ins.returncode, ins.stdout.splitlines()), (0, ["f"]), ins.stderr)
+
+            # (2) 같은 데이터로 재시작: 재적용 없이 통과, 데이터 유지
+            again = run_hook("fds_lab")
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn("재적용하지 않음", again.stdout)
             self.assertEqual(psql("fds_lab", "select count(*) from transactions").stdout.strip(), "1")
 
-            # 실패 경로: 깨진 SQL이면 0이 아닌 코드로 끝나고, 부분 적용 없이 롤백된다
-            self.assertEqual(psql("postgres", "create database fds_bad owner fds_lab").returncode, 0)
+            # (3) 깨진 SQL 첫 시작: 실패·롤백, 같은 데이터로 재시작해도 다시 실패
+            new_db("fds_bad")
             bad = Path(root, "bad.sql")
             bad.write_text("BEGIN;\nCREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);\nSELEC 1;\nCOMMIT;\n",
                            encoding="utf-8")
-            failed = run_init("fds_bad", bad)
-            self.assertNotEqual(failed.returncode, 0)
-            self.assertIn("schema 적용 실패", failed.stderr)
-            self.assertEqual(psql("fds_bad", "select count(*) from pg_tables where schemaname='public'").stdout.strip(),
-                             "0")
+            for _ in range(2):
+                failed = run_hook("fds_bad", bad)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn("schema 적용 실패", failed.stderr)
+                self.assertEqual(psql("fds_bad", "select count(*) from pg_tables where schemaname='public'")
+                                 .stdout.strip(), "0")
+            # (4) 고친 SQL로 같은 데이터 재시도: 복구
+            fixed = run_hook("fds_bad")
+            self.assertEqual(fixed.returncode, 0, fixed.stderr)
+            self.assertEqual(psql("fds_bad", "select version_num from alembic_version").stdout.strip(), "0003")
+
+            # (5) 부분 상태·다른 버전: 고치지 않고 멈춘다
+            new_db("fds_partial")
+            self.assertEqual(psql("fds_partial", "create table transactions (transaction_id text)").returncode, 0)
+            partial = run_hook("fds_partial")
+            self.assertNotEqual(partial.returncode, 0)
+            self.assertIn("예상하지 못한 schema 상태: PARTIAL", partial.stderr)
+            self.assertEqual(psql("fds_lab", "update alembic_version set version_num='0002'").returncode, 0)
+            older = run_hook("fds_lab")
+            self.assertNotEqual(older.returncode, 0)
+            self.assertIn("예상하지 못한 schema 상태: VERSION:0002", older.stderr)
 
 
 if __name__ == "__main__":

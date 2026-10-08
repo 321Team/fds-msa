@@ -98,7 +98,7 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: schema
-              mountPath: /opt/app-root/src/postgresql-init
+              mountPath: /opt/app-root/src/postgresql-start
               readOnly: true
       volumes:
         - name: pgsql-home

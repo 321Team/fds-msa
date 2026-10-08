@@ -76,7 +76,7 @@ Route 음성 시험(실제 클러스터에서 수행, 아직 NOT RUN): 같은 ho
 | 적용 범위 | `components`로만 존재합니다. base·p1-onprem·기본 rosa overlay는 포함하지 않습니다. 쓰는 overlay가 `components:`에 명시합니다 |
 | 이미지 | `registry.access.redhat.com/rhel9/postgresql-16@sha256:560660218b67e9f26dffdc70b8f790903095fe0035604af14376b1dbfd3026fb`(태그 `9.8-1791289385`, PostgreSQL 16.15, 2026-10-06 빌드, Red Hat 등급 A). 임의 UID용 이미지, db01(16.14)과 같은 16 계열. 레지스트리 출처는 #42 결정과 별도로 승인받습니다 |
 | 데이터 | `emptyDir`(HOME 1Gi). PVC·StorageClass 없음. Pod가 다시 만들어지면 빈 DB에 schema만 다시 적용되고 시험 이력은 사라집니다. raw 증적은 실행 직후 수집합니다 |
-| schema | `fds-schema.sql` = 루트 `alembic/versions` head `0003`의 offline SQL(생성물, 직접 수정 금지). 파일 머리에 migration 3개의 SHA-256을 적었고, 시험이 현재 파일과 대조합니다. 이미지의 `postgresql-init` 단계에서 `10-fds-schema.sh`가 앱 계정 소유로 1회 적용합니다. 실패하면 컨테이너가 종료돼 빈 DB로 Ready가 되지 않습니다 |
+| schema | `fds-schema.sql` = 루트 `alembic/versions` head `0003`의 offline SQL(생성물, 직접 수정 금지). 파일 머리에 migration 3개의 SHA-256을 적었고, 시험이 현재 파일과 대조합니다. `10-fds-schema.sh`는 이미지의 `postgresql-start` 훅입니다. 이미지 시작 스크립트(`run-postgresql`)가 계정·DB를 만든 **뒤**, 서버를 소켓 전용으로 띄운 상태에서 **매 시작마다** 실행합니다. 훅이 끝나야 TCP로 서비스합니다. 동작은 세 가지입니다. ① `public`이 비어 있으면 앱 계정 소유로 한 트랜잭션에 적용하고, 다시 확인합니다. ② `alembic_version`이 `0003` 한 행이고 `transactions`가 있으면 재적용하지 않습니다. ③ 그 밖의 상태(부분 적용, 다른 버전, 확인 실패)면 컨테이너를 끝냅니다. 같은 데이터로 재시작해도 같은 확인에서 다시 멈추므로, schema 없는 DB가 Ready가 되지 않습니다 |
 | 시험 데이터 | DB에 직접 넣지 않습니다. `tools/regression/p2e2e.py`가 고유 계정 `SIM_p2_<RUN>_<ID>`·고유 Transaction ID로 API를 호출해 이력을 만들고, 기대 Rule 결과는 실행 전 고정한 plan(SHA 결속)을 따릅니다. 운영 DB 데이터·credential은 복사하지 않습니다 |
 | 네트워크 | 진입은 transaction-api → 5432만(`fds-lab-db-allow`). 시험 DB의 egress 규칙은 없습니다(전부 차단). fds-engine에는 DB 경로가 없습니다. Service는 ClusterIP, Route·NodePort 없음 |
 | 보안 | `runAsNonRoot`, RuntimeDefault, 권한 상승 금지, 읽기 전용 루트, `drop ALL`, SA 토큰 자동 마운트 끔, 서비스 링크 env 끔. broad SCC·root·cluster-wide Operator를 쓰지 않습니다 |
@@ -119,16 +119,24 @@ emptyDir라 남는 볼륨이 없습니다. readback 출력은 증적에 보존�
 | 0. 기록 | 전환 전 manifest revision(fds-msa SHA), 렌더 SHA-256, Secret **이름**·`db-target` 라벨, NetworkPolicy를 기록합니다 | — |
 | 1. 선행 | #47 A1·A2(db01 출발지 관측·pg_hba/방화벽 변경)가 끝나야 시작합니다 | 시작하지 않음 |
 | 2. 앱 Secret 교체 | `transaction-api-db-credentials`를 db01 접속값(TLS)으로 교체, 라벨 `db-target=onprem-db`. 이때 `fds-lab-db-credentials`와 시험 DB는 남겨 둡니다 | 3단계로 가지 않고 이전 값으로 복구 |
-| 3. overlay 교체 | 시험 DB를 뺀 overlay + db01 egress(Relay 경유 `10.1.93.55/32:5432`, 별도 PR)를 apply, transaction-api 재시작 | 이전 overlay revision 재적용 + 시험 DB 값으로 Secret 복구 → Ready 재확인 |
-| 4. 새 경로 검증 | 두 앱 Ready, Route `/readyz`, 저장·조회(p2e2e B1), fds-engine → DB 차단, VPN 끊김·복구(#50) | 3단계 복구 절차 |
+| 3. overlay 교체 | 시험 DB를 뺀 overlay + db01 egress(Relay 경유 `10.1.93.55/32:5432`, 별도 PR)를 apply하고, transaction-api를 `rollout restart` 후 `rollout status`까지 확인 | 아래 "전환 실패 복구" 순서 |
+| 4. 새 경로 검증 | 두 앱 Ready, Route `/readyz`, 저장·조회(p2e2e B1), fds-engine → DB 차단, VPN 끊김·복구(#50) | 아래 "전환 실패 복구" 순서 |
 | 5. 시험 DB 정리 | 4단계 통과 뒤에만 위 "정리와 readback"을 수행합니다 | — |
+
+**전환 실패 복구** — `DATABASE_URL`은 env의 `secretKeyRef`라 실행 중인 Pod에는 반영되지 않습니다. 그래서 Secret을 먼저 되돌리고, 그다음 재시작합니다.
+
+1. `transaction-api-db-credentials`를 시험 DB 값과 `db-target=test-db` 라벨로 먼저 복구합니다(`fds-lab-db-credentials`에서 다시 만듭니다. 값은 출력하지 않습니다).
+2. 0단계에 기록한 이전 overlay revision을 재적용합니다.
+3. `oc rollout restart deployment/transaction-api` 후 `oc rollout status`를 확인합니다.
+4. 시험 DB 저장·조회와 두 앱 Ready를 재확인합니다.
+5. 실패하면 중단하고 로그를 보존합니다. 시험 DB는 삭제하지 않습니다.
 
 시험 DB 데이터는 운영 DB(db01)로 옮기지 않습니다. 시험 DB에서 얻은 결과는 `#43 ROSA APP / TEST_DB`로, db01 경로 결과는 `#47/#50 ROSA_HYBRID / ONPREM_DB`로 따로 기록합니다.
 
 ### 아직 확인하지 못한 것 (LAB-PRECHECK 1단계에서 확인, NOT VERIFIED)
 
 - 이 이미지가 임의 UID + 읽기 전용 루트 + emptyDir HOME에서 initdb·기동하는지
-- `postgresql-init` 스크립트가 계정·DB 생성 뒤에 실행되는지(테이블 소유자가 `fds_lab`인지 readback)
+- 위 시작 순서는 upstream [`16/root/usr/bin/run-postgresql`](https://github.com/sclorg/postgresql-container/blob/b455357a2e281bb224c547dbf948cc8745937181/16/root/usr/bin/run-postgresql) 기준입니다(`postgresql-init` → `migrate_db` → `create_users` → `postgresql-start`). 고정 digest 안의 실제 동작은 `tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`)로 확인합니다. 클러스터 SCC·fsGroup 아래 동작은 Lab에서 다시 확인합니다
 - `check-container` probe 동작, 레지스트리 pull 가능 여부(Lab·ROSA egress)
 - 라우터 namespace 라벨·openshift-dns 라벨이 해당 클러스터에서 맞는지
 
@@ -142,7 +150,16 @@ emptyDir라 남는 볼륨이 없습니다. readback 출력은 증적에 보존�
 kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.yaml
 ```
 
-정적 시험: `tools/tests/test_deploy_openshift_labdb.py`. `kubectl kustomize` 렌더 시험(p1-onprem 12개, render-check 16개)과 실제 PostgreSQL에 schema 스크립트를 적용하는 시험은 `initdb`가 있는 CI Ubuntu 러너에서 실행됩니다. 앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스, 깨진 SQL이면 종료·롤백을 확인합니다.
+정적 시험은 `tools/tests/test_deploy_openshift_labdb.py`입니다. CI Ubuntu 러너에서는 다음 두 시험도 실행됩니다.
+- `kubectl kustomize` 렌더 시험: p1-onprem 12개, render-check 16개
+- 실제 PostgreSQL 훅 시험: 빈 DB 적용(앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스), 재실행 멱등, 깨진 SQL이면 실패·롤백하고 다시 실행해도 실패, 고친 SQL로 복구, 부분 상태·다른 버전이면 중단
+
+`tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`, lab-db 변경 PR에서 실행)는 **고정 digest 이미지를 실제 시작 경로로** 띄웁니다. 조건은 임의 UID(gid 0), 읽기 전용 루트, `--network none`입니다. 확인하는 것:
+1. 빈 HOME 첫 기동
+2. 같은 데이터로 재시작
+3. 깨진 SQL이면 Ready 전에 종료하고, 같은 데이터로 다시 시작해도 종료
+4. 고친 SQL로 복구
+5. 이미지 안 `run-postgresql`의 훅 순서
 
 ## 다음 (아직 없음)
 
