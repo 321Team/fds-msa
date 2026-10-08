@@ -154,7 +154,7 @@ kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.ya
 - `kubectl kustomize` 렌더 시험: p1-onprem 12개, render-check 16개
 - 실제 PostgreSQL 훅 시험: 빈 DB 적용(앱 계정 소유, `alembic_version=0003`, 컬럼·인덱스), 재실행 멱등, 깨진 SQL이면 실패·롤백하고 다시 실행해도 실패, 고친 SQL로 복구, 부분 상태·다른 버전이면 중단
 
-`tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`, lab-db 변경 PR에서 실행)는 **고정 digest 이미지를 실제 시작 경로로** 띄웁니다. 조건은 임의 UID(gid 0), 읽기 전용 루트, `--network none`입니다. 확인하는 것:
+`tools/tests/test_labdb_image_entrypoint.py`(workflow `labdb-image-it`, lab-db 변경 PR에서 실행)는 **고정 digest 이미지를 실제 시작 경로로** 띄웁니다. 조건은 매니페스트와 같게 임의 UID(gid 0), 읽기 전용 루트, `--cap-drop ALL`, `no-new-privileges`, Docker 기본 seccomp이고, 네트워크는 `--network none`입니다. 확인하는 것:
 1. 빈 HOME 첫 기동
 2. 같은 데이터로 재시작
 3. 깨진 SQL이면 Ready 전에 종료하고, 같은 데이터로 다시 시작해도 종료

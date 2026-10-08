@@ -1,7 +1,8 @@
 """고정 digest rhel9/postgresql-16 이미지의 실제 시작 경로로 lab-db schema 훅을 확인한다(격리 컨테이너, 클러스터 없음).
 
 FDS_LABDB_IMAGE_IT=1 이고 docker가 있을 때만 실행한다(workflow `labdb-image-it`). 이미지 pull 외 네트워크를 쓰지 않는다.
-매니페스트와 같은 조건으로 띄운다: 임의 UID(gid 0), 읽기 전용 루트, HOME·소켓·/tmp 쓰기 볼륨, 훅은 postgresql-start에 읽기 전용.
+매니페스트와 같은 조건으로 띄운다: 임의 UID(gid 0), 읽기 전용 루트, capability 전부 제거, no-new-privileges,
+HOME·소켓·/tmp 쓰기 볼륨, 훅은 postgresql-start에 읽기 전용. seccomp는 Docker 기본 프로필(RuntimeDefault에 해당).
 시나리오: (1) 빈 HOME 첫 기동 (2) 같은 데이터 재시작 (3) 깨진 SQL 첫 기동 실패 + 같은 데이터 재시작도 실패 (4) 고친 SQL로 복구.
 """
 from pathlib import Path
@@ -75,6 +76,7 @@ class LabDbImageStartContract(unittest.TestCase):
     def create(self, tag, dirs):
         name = f"labdb-it-{tag}-{secrets.token_hex(3)}"
         docker("create", "--name", name, "--user", UID, "--read-only", "--network", "none",
+               "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                "-v", f"{dirs['home']}:/var/lib/pgsql", "-v", f"{dirs['run']}:/var/run/postgresql",
                "-v", f"{dirs['tmp']}:/tmp", "-v", f"{dirs['start']}:/opt/app-root/src/postgresql-start:ro",
                "-e", "POSTGRESQL_USER=fds_lab", "-e", f"POSTGRESQL_PASSWORD={self.password}",
