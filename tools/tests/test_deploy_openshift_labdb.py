@@ -273,7 +273,7 @@ class LabDbComponentTests(unittest.TestCase):
             ins = psql("fds_lab", "set role fds_lab; insert into transactions (transaction_id, account_id, amount, "
                        "transaction_type, occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
                        "returning fds_evaluation_skipped")
-            self.assertEqual((ins.returncode, ins.stdout.strip().splitlines()[-1]), (0, "f"), ins.stderr)
+            self.assertEqual((ins.returncode, ins.stdout.splitlines()), (0, ["f", "INSERT 0 1"]), ins.stderr)
 
             # 실패 경로: 깨진 SQL이면 0이 아닌 코드로 끝나고, 부분 적용 없이 롤백된다
             self.assertEqual(psql("postgres", "create database fds_bad owner fds_lab").returncode, 0)
