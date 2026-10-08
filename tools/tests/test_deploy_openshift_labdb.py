@@ -1,0 +1,243 @@
+"""components/openshift·lab-db 계약을 정적으로 확인하고, 시험 DB schema 적용을 실제 PostgreSQL에서 확인한다."""
+from pathlib import Path
+import ast
+import copy
+import glob
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+DEPLOY = ROOT / "deploy"
+BASE = DEPLOY / "base"
+OCP = DEPLOY / "components" / "openshift"
+LABDB = DEPLOY / "components" / "lab-db"
+CHECK = DEPLOY / "overlays" / "openshift-render-check"
+
+
+def load(path):
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def load_all(path):
+    return [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d]
+
+
+def base_docs():
+    kust = load(BASE / "kustomization.yaml")
+    return [d for f in kust["resources"] for d in load_all(BASE / f)]
+
+
+def apply_patches(docs, kust):
+    """kustomization의 JSON6902 add 패치만 적용한다(이 디렉터리에서 쓰는 형태)."""
+    for p in kust.get("patches", []):
+        ops = yaml.safe_load(p["patch"])
+        t = p["target"]
+        for doc in docs:
+            if doc["kind"] != t["kind"] or doc["metadata"]["name"] != t.get("name", doc["metadata"]["name"]):
+                continue
+            for op in ops:
+                assert op["op"] == "add", op
+                parts = op["path"].strip("/").split("/")
+                node = doc
+                for key in parts[:-1]:
+                    node = node[int(key)] if isinstance(node, list) else node[key]
+                if parts[-1] == "-":
+                    node.append(copy.deepcopy(op["value"]))
+                else:
+                    assert parts[-1] not in node, f"{op['path']} 이미 있음"
+                    node[parts[-1]] = copy.deepcopy(op["value"])
+    return docs
+
+
+def rendered_policies():
+    docs = base_docs()
+    for comp in (OCP, LABDB):
+        kust = load(comp / "kustomization.yaml")
+        docs += [d for f in kust.get("resources", []) for d in load_all(comp / f)]
+        apply_patches(docs, kust)
+    return {d["metadata"]["name"]: d for d in docs if d["kind"] == "NetworkPolicy"}
+
+
+class OpenShiftComponentTests(unittest.TestCase):
+    def test_component_kind_and_opt_in_scope(self):
+        for comp in (OCP, LABDB):
+            self.assertEqual(load(comp / "kustomization.yaml")["kind"], "Component")
+        for kust in (BASE / "kustomization.yaml", DEPLOY / "overlays" / "p1-onprem" / "kustomization.yaml"):
+            self.assertNotIn("lab-db", kust.read_text(encoding="utf-8"), f"{kust}: lab-db는 명시적 opt-in")
+        text = (CHECK / "kustomization.yaml").read_text(encoding="utf-8")
+        self.assertIn("apply하지 않는다", text)
+        self.assertEqual(load(CHECK / "kustomization.yaml")["components"],
+                         ["../../components/openshift", "../../components/lab-db"])
+
+    def test_routes_expose_only_api_and_readyz_on_one_host(self):
+        routes = [d for d in load_all(OCP / "route.yaml")]
+        self.assertTrue(all(r["kind"] == "Route" for r in routes))
+        self.assertEqual(sorted(r["spec"]["path"] for r in routes), ["/api", "/readyz"], "catch-all·/metrics Route 금지")
+        self.assertEqual(len({r["spec"]["host"] for r in routes}), 1, "두 Route는 같은 host")
+        svc = next(d for d in base_docs() if d["kind"] == "Service" and d["metadata"]["name"] == "transaction-api")
+        http = next(p for p in svc["spec"]["ports"] if p["name"] == "http")
+        self.assertEqual(http["targetPort"], 8000, "Route는 업무 포트로만")
+        for r in routes:
+            self.assertEqual(r["spec"]["to"], {"kind": "Service", "name": "transaction-api", "weight": 100})
+            self.assertEqual(r["spec"]["port"], {"targetPort": "http"})
+            self.assertEqual(r["spec"]["tls"]["termination"], "edge", "passthrough는 경로 라우팅 불가")
+            self.assertEqual(r["spec"]["wildcardPolicy"], "None")
+
+    def test_component_adds_no_fixed_uid_or_pull_secret(self):
+        text = (OCP / "kustomization.yaml").read_text(encoding="utf-8") + (OCP / "route.yaml").read_text(encoding="utf-8")
+        for banned in ("runAsUser", "runAsGroup", "fsGroup", "imagePullSecrets", "NodePort", "10.1.93."):
+            self.assertNotIn(banned, text)
+
+
+class LabDbComponentTests(unittest.TestCase):
+    def setUp(self):
+        self.docs = load_all(LABDB / "lab-db.yaml")
+        self.kust = load(LABDB / "kustomization.yaml")
+
+    def test_db_is_internal_pinned_and_secret_referenced(self):
+        kinds = sorted(d["kind"] for d in self.docs)
+        self.assertEqual(kinds, ["Deployment", "NetworkPolicy", "Service", "ServiceAccount"])
+        svc = next(d for d in self.docs if d["kind"] == "Service")
+        self.assertEqual(svc["spec"]["type"], "ClusterIP")
+        self.assertNotIn("nodePort", str(svc))
+        img = self.kust["images"][0]
+        self.assertEqual(img["name"], "fds-lab-db")
+        self.assertRegex(img["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertIn("postgresql-16", img["newName"], "PG17 금지 — db01과 같은 16 계열")
+        dep = next(d for d in self.docs if d["kind"] == "Deployment")
+        pod = dep["spec"]["template"]["spec"]
+        c = pod["containers"][0]
+        self.assertEqual(c["image"], "fds-lab-db")
+        for env in c["env"]:
+            self.assertNotIn("value", env, "자격증명 값은 저장소에 두지 않는다")
+            self.assertEqual(env["valueFrom"]["secretKeyRef"]["name"], "fds-lab-db-credentials")
+        self.assertTrue(pod["securityContext"]["runAsNonRoot"])
+        self.assertFalse(pod["automountServiceAccountToken"])
+        self.assertNotIn("runAsUser", str(pod), "UID는 SCC가 배정")
+        self.assertTrue(c["securityContext"]["readOnlyRootFilesystem"])
+        self.assertEqual(c["securityContext"]["capabilities"]["drop"], ["ALL"])
+        self.assertTrue(all("emptyDir" in v or "configMap" in v for v in pod["volumes"]), "PVC·hostPath 없음")
+        self.assertEqual(dep["spec"]["replicas"], 1)
+        for d in self.docs:
+            self.assertEqual(d["metadata"]["labels"]["app.kubernetes.io/part-of"], "fds-lab-db", "정리 selector")
+
+    def test_only_transaction_api_reaches_db_and_engine_is_denied(self):
+        nps = rendered_policies()
+        db = nps["fds-lab-db-allow"]
+        self.assertEqual(db["spec"]["ingress"], [{"from": [{"podSelector": {"matchLabels": {"app": "transaction-api"}}}],
+                                                  "ports": [{"port": 5432, "protocol": "TCP"}]}])
+        self.assertNotIn("egress", db["spec"])
+        self.assertIn("Egress", db["spec"]["policyTypes"])
+        api_eg = nps["transaction-api-allow"]["spec"]["egress"]
+        self.assertIn({"to": [{"podSelector": {"matchLabels": {"app": "fds-lab-db"}}}],
+                       "ports": [{"port": 5432, "protocol": "TCP"}]}, api_eg)
+        engine = nps["fds-engine-allow"]["spec"]
+        self.assertNotIn("5432", str(engine.get("egress", [])), "engine → DB 차단")
+        self.assertNotIn("fds-lab-db", str(engine))
+        self.assertEqual(engine["ingress"][0]["from"], [{"podSelector": {"matchLabels": {"app": "transaction-api"}}}])
+
+    def test_schema_sql_is_bound_to_alembic_head(self):
+        sql = (LABDB / "fds-schema.sql").read_text(encoding="utf-8").replace("\r\n", "\n")
+        recorded = dict(re.findall(r"^-- sha256 (\S+) ([0-9a-f]{64})$", sql, re.M))
+        files = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "alembic" / "versions").glob("*.py"))
+        self.assertEqual(sorted(recorded), files, "migration 파일이 늘거나 줄면 SQL을 다시 생성")
+        for name, digest in recorded.items():
+            self.assertEqual(hashlib.sha256((ROOT / name).read_bytes()).hexdigest(), digest,
+                             f"{name} 변경 — fds-schema.sql 재생성 필요")
+        revs, downs = {}, set()
+        for name in files:
+            tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
+            vals = {t.target.id: ast.literal_eval(t.value) for t in tree.body
+                    if isinstance(t, ast.AnnAssign) and isinstance(t.target, ast.Name) and t.value is not None
+                    and t.target.id in ("revision", "down_revision")}
+            revs[vals["revision"]] = vals.get("down_revision")
+            downs.add(vals.get("down_revision"))
+        head = (set(revs) - downs).pop()
+        self.assertIn(f"-- alembic head: {head}", sql)
+        self.assertIn(f"SET version_num='{head}'", sql)
+        self.assertTrue(sql.rstrip().endswith("COMMIT;"))
+
+    # --- 실제 PostgreSQL: 초기화 스크립트가 schema를 앱 계정 소유로 만들고, 실패하면 종료하는지
+    @staticmethod
+    def _pg_bindir():
+        found = shutil.which("initdb")
+        if found:
+            return os.path.dirname(found)
+        cands = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"))
+        return os.path.dirname(cands[-1]) if cands else None
+
+    def test_init_script_applies_schema_as_app_role_on_real_postgresql(self):
+        bindir = self._pg_bindir()
+        bash = shutil.which("bash")
+        if not bindir or not bash or os.name == "nt":
+            self.skipTest("PostgreSQL(initdb)·bash 없음 — CI Ubuntu 러너에서 실행")
+        with tempfile.TemporaryDirectory(prefix="labdb") as root:
+            data, sock = str(Path(root, "data")), str(Path(root, "s"))
+            os.mkdir(sock)
+            try:
+                subprocess.run([os.path.join(bindir, "initdb"), "-D", data, "-A", "trust", "-U", "postgres",
+                                "-E", "UTF8", "--no-sync"], check=True, capture_output=True)
+            except subprocess.CalledProcessError as e:
+                self.skipTest(f"initdb 실행 불가: {e.stderr[-200:]!r}")
+            pg_ctl = os.path.join(bindir, "pg_ctl")
+            subprocess.run([pg_ctl, "-D", data, "-o", f"-c listen_addresses='' -k {sock} -p 54330",
+                            "-l", str(Path(root, "pg.log")), "-w", "start"], check=True, capture_output=True)
+            self.addCleanup(subprocess.run, [pg_ctl, "-D", data, "-m", "immediate", "stop"], capture_output=True)
+            env = dict(os.environ, PGHOST=sock, PGPORT="54330", PGUSER="postgres",
+                       PATH=bindir + os.pathsep + os.environ.get("PATH", ""))
+
+            def psql(db, sql):
+                return subprocess.run([os.path.join(bindir, "psql"), "-X", "-d", db, "-v", "ON_ERROR_STOP=1", "-At",
+                                       "-F", "|", "-c", sql], capture_output=True, text=True, env=env)
+
+            # 이미지가 하는 것처럼 앱 계정과 그 계정 소유 DB를 먼저 만든다
+            self.assertEqual(psql("postgres", "create role fds_lab login").returncode, 0)
+            self.assertEqual(psql("postgres", "create database fds_lab owner fds_lab").returncode, 0)
+
+            def run_init(db, sql_path):
+                return subprocess.run([bash, "-c", f'source "{LABDB / "10-fds-schema.sh"}"'], capture_output=True,
+                                      text=True, env=dict(env, POSTGRESQL_DATABASE=db, POSTGRESQL_USER="fds_lab",
+                                                          FDS_SCHEMA_SQL=str(sql_path)))
+
+            ok = run_init("fds_lab", LABDB / "fds-schema.sql")
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertEqual(psql("fds_lab", "select version_num from alembic_version").stdout.strip(), "0003")
+            self.assertEqual(psql("fds_lab", "select tableowner from pg_tables where tablename in "
+                                  "('transactions','alembic_version') group by 1").stdout.strip(), "fds_lab")
+            cols = psql("fds_lab", "select column_name||':'||data_type||':'||is_nullable from information_schema.columns "
+                        "where table_name='transactions' order by ordinal_position").stdout.split()
+            self.assertEqual(cols, [
+                "transaction_id:text:NO", "account_id:text:NO", "amount:numeric:NO", "currency:text:NO",
+                "transaction_type:text:NO", "source_ip:text:YES", "occurred_at:timestamp with time zone:NO",
+                "received_at:timestamp with time zone:NO", "fds_detected:boolean:YES", "fds_rules:jsonb:YES",
+                "fds_evaluation_skipped:boolean:NO"])
+            idx = psql("fds_lab", "select indexname from pg_indexes where tablename='transactions' order by 1").stdout.split()
+            self.assertEqual(idx, ["idx_transactions_account_id", "idx_transactions_account_type_time",
+                                   "transactions_pkey"])
+            # 앱 계정으로 저장·조회가 되는지(이력 의존 Rule의 전제)
+            ins = psql("fds_lab", "set role fds_lab; insert into transactions (transaction_id, account_id, amount, "
+                       "transaction_type, occurred_at, received_at) values ('t1','a1',1,'TRANSFER',now(),now()) "
+                       "returning fds_evaluation_skipped")
+            self.assertEqual((ins.returncode, ins.stdout.strip().splitlines()[-1]), (0, "f"), ins.stderr)
+
+            # 실패 경로: 깨진 SQL이면 0이 아닌 코드로 끝나고, 부분 적용 없이 롤백된다
+            self.assertEqual(psql("postgres", "create database fds_bad owner fds_lab").returncode, 0)
+            bad = Path(root, "bad.sql")
+            bad.write_text("BEGIN;\nCREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);\nSELEC 1;\nCOMMIT;\n",
+                           encoding="utf-8")
+            failed = run_init("fds_bad", bad)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("schema 적용 실패", failed.stderr)
+            self.assertEqual(psql("fds_bad", "select count(*) from pg_tables where schemaname='public'").stdout.strip(),
+                             "0")
+
+
+if __name__ == "__main__":
+    unittest.main()

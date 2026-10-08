@@ -1,0 +1,20 @@
+# 렌더 확인 전용 — 어떤 클러스터에도 apply하지 않는다.
+# base + components(openshift, lab-db)가 함께 렌더되는지만 확인한다. 값은 모두 자리표시값이다.
+# 실제 overlays/ocp-lab·overlays/rosa는 입력이 정해진 뒤 만든다:
+#   namespace(#34 Lab 경계 j1-/j2-, ROSA #38), 레지스트리(#42), Route host·TLS(#38), owner·expires.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fds-render-check
+resources:
+  - ../../base
+components:
+  - ../../components/openshift
+  - ../../components/lab-db
+images:
+  # 앱 digest는 #15 승인 기준(a7093136/5e2a081c). 레지스트리 이름은 #42 결정 전 자리표시값.
+  - name: transaction-api
+    newName: registry-input-pending.invalid/fds/transaction-api
+    digest: sha256:a7093136d12640da00570c18ed278eacbb8e9ba3637c7d509571346eac45cc33
+  - name: fds-engine
+    newName: registry-input-pending.invalid/fds/fds-engine
+    digest: sha256:5e2a081cd51a957c3fad038b3eab07884c446ea3c2a814a905e3f41c24f67369

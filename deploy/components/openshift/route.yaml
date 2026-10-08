@@ -1,0 +1,43 @@
+# 같은 host에 업무 경로 /api와 Health 경로 /readyz만 둔다. catch-all(경로 없는) Route는 만들지 않는다.
+# transaction-api는 업무 포트 8000에서도 /metrics를 응답하므로, 경로를 좁히는 것이 외부 비노출 수단이다.
+# TLS: 앱이 평문 HTTP(8000)라 경로 라우팅이 되는 방식은 edge뿐이다(passthrough는 경로 라우팅 불가,
+# reencrypt는 Pod TLS 필요). 최종 TLS 방식·인증서는 #38 handoff로 확인한다.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: transaction-api-api
+  labels:
+    app: transaction-api
+spec:
+  host: fds-api.route-host-input-pending.invalid
+  path: /api
+  to:
+    kind: Service
+    name: transaction-api
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: transaction-api-readyz
+  labels:
+    app: transaction-api
+spec:
+  host: fds-api.route-host-input-pending.invalid
+  path: /readyz
+  to:
+    kind: Service
+    name: transaction-api
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

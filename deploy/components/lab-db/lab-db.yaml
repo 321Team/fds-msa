@@ -1,0 +1,155 @@
+# 시험 DB 1개 Pod. 데이터는 emptyDir(Pod 수명) — 영구 볼륨·StorageClass를 쓰지 않아 공용 Lab Quota와 정리가 단순하다.
+# Pod가 다시 만들어지면 빈 DB에서 schema만 다시 적용된다(시험 이력은 사라짐). raw 증적은 실행 직후 수집한다.
+# owner·expires 주석은 실제 overlay가 값을 넣는다. 만료 전 README의 정리 절차와 readback을 수행한다.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fds-lab-db-sa
+  labels:
+    app: fds-lab-db
+    app.kubernetes.io/part-of: fds-lab-db
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fds-lab-db
+  labels:
+    app: fds-lab-db
+    app.kubernetes.io/part-of: fds-lab-db
+  annotations:
+    fds.321team/purpose: "#43 TEST_DB - 운영 DB 아님, 시험 후 삭제"
+    fds.321team/owner: owner-input-pending
+    fds.321team/expires: expires-input-pending
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: fds-lab-db
+  template:
+    metadata:
+      labels:
+        app: fds-lab-db
+        app.kubernetes.io/part-of: fds-lab-db
+    spec:
+      serviceAccountName: fds-lab-db-sa
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: fds-lab-db  # component images:가 digest로 바꾼다
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: fds-lab-db-credentials
+                  key: POSTGRESQL_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fds-lab-db-credentials
+                  key: POSTGRESQL_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: fds-lab-db-credentials
+                  key: POSTGRESQL_DATABASE
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["/usr/libexec/check-container"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/usr/libexec/check-container", "--live"]
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 10
+          volumeMounts:
+            # 읽기 전용 루트에서 이미지가 쓰는 위치: HOME(데이터·생성 설정), 소켓, 임시 파일
+            - name: pgsql-home
+              mountPath: /var/lib/pgsql
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+            - name: schema
+              mountPath: /opt/app-root/src/postgresql-init
+              readOnly: true
+      volumes:
+        - name: pgsql-home
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: schema
+          configMap:
+            name: fds-lab-db-schema
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fds-lab-db
+  labels:
+    app: fds-lab-db
+    app.kubernetes.io/part-of: fds-lab-db
+spec:
+  type: ClusterIP
+  selector:
+    app: fds-lab-db
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+# 시험 DB 진입은 transaction-api 5432만. 나가는 경로는 없다(egress 규칙 없음 = 전부 차단).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fds-lab-db-allow
+  labels:
+    app.kubernetes.io/part-of: fds-lab-db
+spec:
+  podSelector:
+    matchLabels:
+      app: fds-lab-db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: transaction-api
+      ports:
+        - port: 5432
+          protocol: TCP
