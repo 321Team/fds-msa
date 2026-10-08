@@ -316,6 +316,10 @@ jobs:
             done
             docker logs "$cid" > "$evidence/$service-container.log" 2>&1 || true
             test "$passed" -eq 1
+            cp tools/check_listener_isolation.py "$evidence/listener-checker.py"
+            docker exec -i "$cid" /venv/bin/python3 - --service "$service" \
+              < tools/check_listener_isolation.py \
+              > "$evidence/$service-listener-isolation.json"
             cleanup
             trap - EXIT
             echo "APKO_PROCESS_LIVEZ=PASS" >> "$evidence/$service-livez.txt"
@@ -465,6 +469,8 @@ jobs:
           SUPPLY_CHAIN_ADOPTION=APPROVED_DEC_P1_IMG_01
           OPERATING_DOCKERFILES=VALIDATED_THIS_RUN
           SEC04_UID_GID=10001:999
+          CONTAINER_LOOPBACK_LISTENER_ISOLATION=REQUIRED
+          CLUSTER_LISTENER_ISOLATION=NOT_RUN
           HARBOR_PUSH=NOT_EXECUTED
           KUBERNETES_DEPLOY=NOT_EXECUTED
           EOF

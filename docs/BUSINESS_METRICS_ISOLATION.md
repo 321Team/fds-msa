@@ -9,6 +9,10 @@
 - `/livez`, `/readyz`, 거래/평가 처리, Service/NetworkPolicy, 포트와 이미지/의존성 lock은 바꾸지 않는다. 기존 main의 logging 수정도 유지한다.
 - pytest는 ASGI 계약과 공유 registry를 검증한다. CI 통과를 실제 바인딩·운영 배포·AC 인수로 표시하지 않는다.
 
+별도로 `apko-wolfi-py313` 후보 workflow는 `--network none`인 실제 앱 컨테이너 안에서 `tools/check_listener_isolation.py`를 실행한다. 정상 entrypoint의 업무 `/livez`200, 전용 `/metrics`200과 앱 counter 존재, 업무 `/metrics`·`/metrics/`·`/%6detrics`의 GET/HEAD404·redirect 없음 총8개 조건을 loopback TCP로 확인한다. 시작 대기는 전체30초, 각 요청1초와 본문512KiB 상한이 있으며 최종 오류·예상 밖 응답이면 workflow가 실패한다. JSON에는 본문 대신 hash·상태·길이·시각·요청별 결과를 보존하고 실패 시에도 기존 EXIT trap으로 해당 CI 컨테이너를 제거한다.
+
+이 검사는 컨테이너 안의 실제 listener 경로를 보완한다. 운영 Service/NodePort/NetworkPolicy·DB readiness·거래 저장·여러 replica·카운터 증가의 TCP E2E는 포함하지 않는다. Counter 증가/공유 registry는 별도 ASGI 시험의 범위다. 검사기 회귀시험은 실제 로컬 HTTP fixture로200 노출·redirect·지표 누락·준비 timeout·본문 상한 초과를 검증하며 운영 앱 실행과 구분한다.
+
 ## 배포와 원복 인계
 
 실행 위치는 승인된 CI/CD 회차와 정본 클러스터이며, APP Lead가 리뷰·병합된 정확한 Source SHA, Build/Scan 결과, 새 image digest, 대상6개 Pod의 기존 digest/배포 사양, 비중첩 창과 복구 인수를 고정한 후 적용한다. 문서/코드 PR만으로 Push/Deploy를 실행하지 않는다.
