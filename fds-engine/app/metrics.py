@@ -8,7 +8,7 @@ This app defines no metrics of its own. prometheus_client registers
 Counters (see app/main.py's FDS_DETECTED_TOTAL etc.) against a
 process-global default REGISTRY, so as long as this listener runs in the
 *same process* as app.main (see run.py), generate_latest() here reports
-the identical data app.main's own /metrics endpoint would. Running the two
+the counters updated by the business app, which has no /metrics route. Running the two
 apps as separate OS processes would each start with an empty registry and
 always report zero — this only works because run.py runs both as
 concurrent asyncio servers inside one process.

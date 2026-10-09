@@ -10,6 +10,7 @@ forever regardless of real traffic on the main port -- this test exists
 to catch exactly that.
 """
 from fastapi.testclient import TestClient
+from prometheus_client.parser import text_string_to_metric_families
 
 from app.main import app as main_app, FDS_EVALUATED_TOTAL
 from app.metrics import metrics_app
@@ -45,10 +46,12 @@ def test_metrics_app_shares_registry_with_main_app():
         "occurred_at": "2026-09-16T12:00:00+09:00",
         "received_at": "2026-09-16T12:00:00+09:00",
     }
-    main_client.post("/evaluate", json=payload)
+    response = main_client.post("/evaluate", json=payload)
+    assert response.status_code == 200
 
     after = FDS_EVALUATED_TOTAL._value.get()
     assert after == before + 1
 
     body = metrics_client.get("/metrics").text
-    assert "fds_evaluated_total" in body
+    samples = {s.name: s.value for f in text_string_to_metric_families(body) for s in f.samples}
+    assert samples["fds_evaluated_total"] == after

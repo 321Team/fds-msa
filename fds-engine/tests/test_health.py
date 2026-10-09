@@ -4,6 +4,7 @@ Smoke / contract tests for fds-engine's HTTP surface.
 fds-engine has no external dependencies (no DB), so these run against the
 real FastAPI app with no mocking required.
 """
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -23,10 +24,13 @@ def test_readyz_returns_ok():
     assert r.json() == {"status": "ok"}
 
 
-def test_metrics_endpoint_is_exposed():
-    r = client.get("/metrics")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/plain")
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize("path", ["/metrics", "/metrics/", "/%6detrics"])
+def test_business_app_does_not_expose_metrics(method, path):
+    r = client.request(method, path, follow_redirects=False)
+    assert r.status_code == 404
+    assert "location" not in r.headers
+    assert "# HELP" not in r.text
 
 
 def test_evaluate_contract_happy_path():
