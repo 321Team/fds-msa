@@ -95,7 +95,15 @@ def call(method, target, port, path, payload=None, timeout=TIMEOUT):
 
 def load_meta(out_dir):
     with open(os.path.join(out_dir, 'meta.json'), encoding='utf-8') as f:
-        return json.load(f)
+        meta = json.load(f)
+    current_tool = sha256_file(os.path.abspath(__file__))
+    if meta['tool_sha256'] != current_tool or meta['criteria_sha256'] != sha256_file(os.path.join(out_dir, 'criteria.txt')):
+        raise ValueError('EVIDENCE_BINDING_MISMATCH')
+    expected = criteria_text(meta['run'], meta['today'], current_tool, meta['targets'], meta['port'])
+    with open(os.path.join(out_dir, 'criteria.txt'), encoding='utf-8') as f:
+        if f.read() != expected:
+            raise ValueError('CRITERIA_METADATA_MISMATCH')
+    return meta
 
 
 def judge_one(expect, code, text):
@@ -106,8 +114,20 @@ def judge_one(expect, code, text):
     if code == 201:
         try:
             j = json.loads(text)
-            trig = sorted(r['rule_id'] for r in j['fds_rules'] if r['triggered'])
+            if not isinstance(j, dict) or not isinstance(j['transaction_id'], str) or not j['transaction_id']:
+                raise ValueError('invalid transaction id')
+            rules = j['fds_rules']
+            if not isinstance(rules, list) or len(rules) != 4:
+                raise ValueError('four rules required')
+            ids = [r['rule_id'] for r in rules]
+            if any(not isinstance(rid, str) for rid in ids) or set(ids) != {'R01', 'R02', 'R04', 'R07'}:
+                raise ValueError('rule ids must be unique and complete')
+            if any(type(r['triggered']) is not bool for r in rules):
+                raise ValueError('triggered must be boolean')
+            trig = sorted(r['rule_id'] for r in rules if r['triggered'])
             skipped, detected = j['fds_evaluation_skipped'], j['fds_detected']
+            if type(detected) is not bool or skipped is not False or detected != bool(trig):
+                raise ValueError('invalid normal evaluation flags')
         except (ValueError, KeyError, TypeError):
             return 'FAIL', 'invalid-json'
     if expect == 'INFO':
@@ -120,13 +140,40 @@ def judge_one(expect, code, text):
     return ('PASS' if good else 'FAIL'), ','.join(trig)
 
 
-def judge(out_dir, emit=print):
-    meta = load_meta(out_dir)
-    got = {}
+def load_results(out_dir, meta, complete=False):
+    """Reject ambiguous evidence before writing a new judgement. No network calls."""
+    expected = {cid for cid, _, _ in cases(meta['run'], meta['today'])}
+    got, transaction_ids = {}, set()
     with open(os.path.join(out_dir, 'results.jsonl'), encoding='utf-8') as f:
         for line in f:
             r = json.loads(line)
+            if not isinstance(r, dict) or r.get('case') not in expected or r['case'] in got:
+                raise ValueError('CASE_DUPLICATE_OR_UNKNOWN')
+            if type(r.get('http')) is not int or not isinstance(r.get('body'), str) or not isinstance(r.get('worker'), str):
+                raise ValueError('RECORD_INVALID')
+            if r['worker'] not in meta['targets'] or not (r['http'] == 0 or 100 <= r['http'] <= 599):
+                raise ValueError('RECORD_TARGET_OR_STATUS_INVALID')
+            if r['http'] == 201:
+                j = json.loads(r['body'])
+                if not isinstance(j, dict) or not isinstance(j.get('transaction_id'), str) or not j['transaction_id']:
+                    raise ValueError('TRANSACTION_ID_INVALID')
+                tid = j['transaction_id']
+                if tid in transaction_ids:
+                    raise ValueError('TRANSACTION_ID_DUPLICATE')
+                transaction_ids.add(tid)
             got[r['case']] = r
+    if complete and set(got) != expected:
+        raise ValueError('CASE_RECORDS_INCOMPLETE')
+    return got
+
+
+def judge(out_dir, emit=print):
+    try:
+        meta = load_meta(out_dir)
+        got = load_results(out_dir, meta)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        emit('STOP EVIDENCE_INVALID ' + type(e).__name__)
+        return 2
     counts = {'PASS': 0, 'FAIL': 0, 'INFO': 0}
     lines = []
     for cid, _, expect in cases(meta['run'], meta['today']):
@@ -200,19 +247,31 @@ def parse_db_log(path):
     with open(path, encoding='utf-8') as f:
         for line in f:
             p = line.rstrip('\n').split('|')
-            if len(p) == 8 and p[0].startswith('SIM_rg_'):
+            if p[0].startswith('SIM_rg_'):
+                if len(p) != 8 or not p[1] or p[1] in rows:
+                    raise ValueError('DB_ROW_AMBIGUOUS')
                 rows[p[1]] = p
     return rows
 
 
 def crosscheck(out_dir, db_log, emit=print):
-    meta = load_meta(out_dir)
-    prefix = f"SIM_rg_{meta['run']}_"
-    db = {k: v for k, v in parse_db_log(db_log).items() if v[0].startswith(prefix)}
-    payloads = {cid: p for cid, p, _ in cases(meta['run'], meta['today'])}
     bad, seen = 0, set()
-    with open(os.path.join(out_dir, 'results.jsonl'), encoding='utf-8') as f:
-        results = [json.loads(line) for line in f]
+    try:
+        meta = load_meta(out_dir)
+        prefix = f"SIM_rg_{meta['run']}_"
+        case_list = cases(meta['run'], meta['today'])
+        payloads = {cid: p for cid, p, _ in case_list}
+        got = load_results(out_dir, meta, complete=True)
+        db = {k: v for k, v in parse_db_log(db_log).items() if v[0].startswith(prefix)}
+        # Matching two empty/malformed sources is not a successful regression.
+        for cid, _, expected in case_list:
+            r = got[cid]
+            if judge_one(expected, r['http'], r['body'])[0] == 'FAIL':
+                raise ValueError('API_CASE_FAILED')
+        results = [got[cid] for cid, _, _ in case_list]
+    except (OSError, ValueError, KeyError, TypeError):
+        emit('STOP EVIDENCE_INVALID')
+        return 2
     for r in results:
         cid = r['case']
         if r['http'] != 201:
@@ -230,7 +289,12 @@ def crosscheck(out_dir, db_log, emit=print):
         rules = sorted(x['rule_id'] for x in j['fds_rules'] if x['triggered'])
         want = [p['account_id'], tid, p['transaction_type'], p['amount'],
                 't' if j['fds_detected'] else 'f', 't' if j['fds_evaluation_skipped'] else 'f', ','.join(rules) or '-']
-        have = [row[0], row[1], row[2], float(row[3]), row[4], row[5], row[6]]
+        try:
+            have = [row[0], row[1], row[2], float(row[3]), row[4], row[5], row[6]]
+        except ValueError:
+            bad += 1
+            emit(f'NG {cid} {tid} DB amount invalid')
+            continue
         want[3] = float(want[3])
         ok = want == have
         bad += not ok

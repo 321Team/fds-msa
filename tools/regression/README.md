@@ -9,7 +9,7 @@ P1-E2E-01 [#20](https://github.com/321Team/fds-project-baseline/issues/20) 회�
 | 파일 | 실행 위치 | 역할 |
 |---|---|---|
 | `rg.py` | edge01 | `run`: 기준 기록 → 요청 → 판정. `judge`: 저장된 응답으로 재판정. `crosscheck`: db01 조회 결과와 응답 대조 |
-| `../tests/test_regression_rg.py` | CI | selftest 7건(가짜 transaction-api): 정상, Rule 미탐, 5xx 중단, 준비 안 됨, 결과 폴더 재사용 거부, 재판정 일치, DB 대조 |
+| `../tests/test_regression_rg.py` | CI | selftest 18건(가짜 transaction-api·합성 로그): 기존 정상/중단 경로, 4개 Rule·boolean 계약, 누락/중복·source/기준 결속, DB 대조 |
 
 표준 라이브러리만 쓴다(Python 3.6 이상).
 
@@ -33,7 +33,7 @@ P1-E2E-01 [#20](https://github.com/321Team/fds-project-baseline/issues/20) 회�
 
 - 계정 `SIM_rg_<RUN>_<ID>`(RUN = KST `yyyymmddHHMM`), `source_ip` 198.51.100.10(문서용 IP), 통화 KRW.
 - 201 응답은 `fds_evaluation_skipped=false`이고 `fds_detected`가 트리거 유무와 같아야 PASS다.
-- I01은 transaction-api가 시간대 없는 시각을 그대로 받아(`datetime.fromisoformat`) 저장·Rule 판단이 실행 환경 시간대에 따라 달라질 수 있어서 기록만 한다.
+- I01의 Rule 계산은 승인 소스 `affbc69`에서 시간대 없는 값을 UTC로 간주해 KST로 변환한다. 따라서 naive `02:30`은 KST `11:30`이며 R04가 아니다. transaction-api는 naive 값을 DB driver에 전달하므로 실제 DB 저장/표시 시각은 별도로 관측한다. I01의 기존 INFO 범위는 유지하며 새 업무 시간 정책을 채택하지 않는다.
 - 대상: `10.1.93.105/107/108:30080`에 순서대로 순환(요청마다 새 연결, timeout 10초).
 
 ## 사용
@@ -60,6 +60,15 @@ python3 rg.py crosscheck <OUT_DIR> <DB_LOG>  # DB 대조(요청 없음)
 
 재시도는 하지 않는다(같은 케이스가 두 번 저장되면 R01/R07 판정이 달라진다). 종료 코드: 0 = 판정 대상 전부 PASS, 1 = FAIL 있음, 2 = 중단 또는 사용 오류.
 
+`judge`/`crosscheck`는 `meta.json`의 도구 SHA-256과 현재 `rg.py` bytes, 기준 SHA-256과 `criteria.txt`, RUN·날짜·대상·port와 재생성한 기준이 일치할 때만 판정한다. 다른 버전의 도구로 과거 증적을 재판정하려면 해당 회차의 실제 도구를 보존해 사용한다. hash·meta를 편집해 새 도구와 맞추지 않는다.
+
+- 케이스 중복/미정의 ID·대상 불일치·201 Transaction ID 중복·잘못된 기록은 `STOP EVIDENCE_INVALID` / rc2다. 기존 `judge.txt`는 덮어쓰지 않는다.
+- 정상 201은 고유한 R01/R02/R04/R07 4개, boolean `triggered`/`fds_detected`, `skipped=false`와 검출 일치가 필요하다. 누락 Rule을 “false”로 간주하지 않는다.
+- `judge`는 정상적으로 중단된 회차의 미전송 케이스를 FAIL로 기록한다. `crosscheck`는 모든 25개 요청 기록이 있어야 진행하며, 빈 응답/DB 두 파일이나 일부 응답의 일치만으로 PASS하지 않는다. 정상 API 케이스의 기대 판정을 먼저 확인하고 DB Transaction ID 중복·잘못된 행을 거부한다.
+- 파일 내부 결속은 원본 생성자/독립 승인·외부 manifest의 진위를 증명하지 않는다. 실제 실행 도구 SHA와 승인 source, RUN의 사전 DB 0행 확인, 전체 원본 보관·독립 증적 리뷰는 실행안에서 함께 확인한다. RUN은 분 단위이므로 새 폴더만 만들고 같은 RUN을 재전송하지 않는다.
+
+현행 Final Regression 준비·입력의 경계는 [P1 실행 준비 대조](../../docs/p1-final-regression-readiness-20261010.md)에 연결한다.
+
 ## 함께 확인하는 것 (읽기 전용, 이 도구 밖)
 
 - control01: 시험 전·후 Metric(1회차와 같은 6개 query)과 Pod `restartCount`, N08(control01 → Worker `:30080/readyz`가 `000`).
@@ -73,7 +82,7 @@ select account_id, transaction_id, transaction_type, amount, fds_detected, fds_e
 from transactions where account_id like 'SIM_rg_<RUN>_%' order by received_at;
 ```
 
-`crosscheck`는 201 응답마다 `transaction_id`로 DB 행을 찾아 계정·유형·금액·`fds_detected`·`fds_evaluation_skipped`·트리거 Rule을 비교하고, 응답에 없는 DB 행도 불일치로 센다. `occurred_at`은 출력만 한다.
+`crosscheck`는 201 응답마다 `transaction_id`로 DB 행을 찾아 계정·유형·금액·`fds_detected`·`fds_evaluation_skipped`·트리거 Rule을 비교하고, 응답에 없는 DB 행도 불일치로 센다. `occurred_at`은 출력만 한다. 이 조회는 해당 RUN으로 제한하고 원본 출력·종료 코드를 보관한다. 파서가 별도 SQL 집계나 timestamp 저장 의미까지 증명하지 않는다.
 
 ## 운영 영향
 

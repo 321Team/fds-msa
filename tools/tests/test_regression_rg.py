@@ -37,7 +37,9 @@ class _FakeApi(BaseHTTPRequestHandler):
                 return self._reply(422, {"detail": "validation"})
             occ = datetime.fromisoformat(req["occurred_at"]) if req.get("occurred_at") else s.now
             if occ.tzinfo is None:
-                occ = occ.replace(tzinfo=KST)
+                # Match the approved rule source: naive input is treated as UTC.
+                # This mock does not verify PostgreSQL session timezone/storage.
+                occ = occ.replace(tzinfo=timezone.utc)
             prior = [r for r in s.rows if r["account"] == req["account_id"] and r["type"] == req["transaction_type"]]
             rules = set()
             if req["transaction_type"] == "withdrawal" and len(prior) >= 3 and "R01" not in s.disabled:
@@ -99,7 +101,7 @@ class RegressionToolTests(unittest.TestCase):
             first = json.loads(Path(out, "results.jsonl").read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(code, 0)
         self.assertIn("== 24 PASS / 0 FAIL / 1 INFO", judge)
-        self.assertIn("INFO I01 127.0.0.1 201 R04", judge)
+        self.assertIn("INFO I01 127.0.0.1 201\n", judge)
         self.assertEqual(sha_line, hashlib.sha256(crit).hexdigest() + "  criteria.txt\n")
         tool_sha = hashlib.sha256(Path(rg.__file__).read_bytes()).hexdigest()
         self.assertIn(f"SHA-256={tool_sha}".encode("utf-8"), crit)
@@ -179,6 +181,171 @@ class RegressionToolTests(unittest.TestCase):
             server.rows.append(dict(removed, tid=str(uuid.uuid4())))  # 응답에 없는 행
             self.db_log(server, log)
             self.assertEqual(rg.crosscheck(out, log, emit=quiet), 1)
+
+    @staticmethod
+    def evidence_fixture(out):
+        """Synthetic complete evidence; no HTTP, PostgreSQL or operational writes."""
+        run, today = '202610101400', '2026-10-10'
+        tool_sha = hashlib.sha256(Path(rg.__file__).read_bytes()).hexdigest()
+        criteria = rg.criteria_text(run, today, tool_sha, ('127.0.0.1',), 30080)
+        Path(out, 'criteria.txt').write_text(criteria, encoding='utf-8')
+        meta = {'run': run, 'today': today, 'tool_sha256': tool_sha, 'targets': ['127.0.0.1'], 'port': 30080,
+                'criteria_sha256': hashlib.sha256(Path(out, 'criteria.txt').read_bytes()).hexdigest()}
+        Path(out, 'meta.json').write_text(json.dumps(meta), encoding='utf-8')
+        records, rows = [], []
+        for n, (cid, payload, expected) in enumerate(rg.cases(run, today)):
+            triggered = expected if isinstance(expected, frozenset) else frozenset()
+            tid = str(uuid.UUID(int=n + 1))
+            body = {'transaction_id': tid, 'fds_detected': bool(triggered), 'fds_evaluation_skipped': False,
+                    'fds_rules': [{'rule_id': rid, 'triggered': rid in triggered, 'detail': None}
+                                  for rid in ('R01', 'R02', 'R04', 'R07')]}
+            code = 422 if expected == 'HTTP422' else 201
+            records.append({'case': cid, 'worker': '127.0.0.1', 'http': code, 'body': json.dumps(body)})
+            if code == 201:
+                rows.append('|'.join([payload['account_id'], tid, payload['transaction_type'], str(payload['amount']),
+                                      't' if triggered else 'f', 'f', ','.join(sorted(triggered)) or '-',
+                                      '2026-10-10 14:00:00+09']))
+        RegressionToolTests.write_results(out, records)
+        Path(out, 'db.log').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+        return records, rows, meta
+
+    @staticmethod
+    def write_results(out, records):
+        Path(out, 'results.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in records), encoding='utf-8')
+
+    def test_synthetic_complete_evidence_matches_without_network(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.evidence_fixture(out)
+            self.assertEqual(rg.judge(out, emit=lambda _: None), 0)
+            self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 0)
+
+    def test_four_rule_contract_and_boolean_types_are_required(self):
+        with tempfile.TemporaryDirectory() as out:
+            records, _, _ = self.evidence_fixture(out)
+            valid = json.loads(records[0]['body'])
+        broken = []
+        broken.append(dict(valid, fds_rules=[]))
+        broken.append(dict(valid, fds_rules=valid['fds_rules'][:3]))
+        broken.append(dict(valid, fds_rules=[valid['fds_rules'][0]] * 4))
+        broken.append(dict(valid, fds_rules=[dict(r, rule_id='UNKNOWN') for r in valid['fds_rules']]))
+        broken.append(dict(valid, fds_rules=[dict(r, triggered=0) for r in valid['fds_rules']]))
+        broken.append(dict(valid, fds_detected=0))
+        broken.append(dict(valid, fds_detected='false'))
+        broken.append(dict(valid, fds_detected=True))
+        broken.append(dict(valid, fds_evaluation_skipped=0))
+        broken.append(dict(valid, transaction_id=''))
+        for body in broken:
+            with self.subTest(body=body):
+                self.assertEqual(rg.judge_one(frozenset(), 201, json.dumps(body))[0], 'FAIL')
+
+    def test_duplicate_case_cannot_hide_prior_failure_and_preserves_old_judgement(self):
+        with tempfile.TemporaryDirectory() as out:
+            records, _, _ = self.evidence_fixture(out)
+            correct = dict(records[1])
+            failed_body = json.loads(records[0]['body'])
+            failed_body['transaction_id'] = json.loads(records[1]['body'])['transaction_id']
+            records[1]['body'] = json.dumps(failed_body)
+            records.append(correct)
+            self.write_results(out, records)
+            Path(out, 'judge.txt').write_bytes(b'ORIGINAL-JUDGEMENT\n')
+            self.assertEqual(rg.judge(out, emit=lambda _: None), 2)
+            self.assertEqual(Path(out, 'judge.txt').read_bytes(), b'ORIGINAL-JUDGEMENT\n')
+            self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+
+    def test_unknown_case_and_target_are_refused(self):
+        for field, value in [('case', 'UNKNOWN'), ('worker', '192.0.2.99'), ('http', True), ('http', -1)]:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as out:
+                records, _, _ = self.evidence_fixture(out)
+                records[0][field] = value
+                self.write_results(out, records)
+                self.assertEqual(rg.judge(out, emit=lambda _: None), 2)
+                self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+
+    def test_distinct_cases_cannot_share_transaction_id(self):
+        with tempfile.TemporaryDirectory() as out:
+            records, _, _ = self.evidence_fixture(out)
+            second = json.loads(records[1]['body'])
+            second['transaction_id'] = json.loads(records[0]['body'])['transaction_id']
+            records[1]['body'] = json.dumps(second)
+            self.write_results(out, records)
+            self.assertEqual(rg.judge(out, emit=lambda _: None), 2)
+            self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+
+    def test_empty_and_partial_responses_cannot_pass_db_crosscheck(self):
+        for count in (0, 1, 24):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as out:
+                records, _, _ = self.evidence_fixture(out)
+                self.write_results(out, records[:count])
+                Path(out, 'db.log').write_text('rows|0\n', encoding='utf-8')
+                self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+                self.assertEqual(rg.judge(out, emit=lambda _: None), 1)
+
+    def test_duplicate_and_malformed_db_rows_are_refused(self):
+        for extra in ('duplicate', 'malformed'):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as out:
+                _, rows, _ = self.evidence_fixture(out)
+                rows.append(rows[0] if extra == 'duplicate' else 'SIM_rg_202610101400_bad|broken')
+                Path(out, 'db.log').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+                self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+
+    def test_failed_api_case_cannot_become_success_by_matching_bad_database_row(self):
+        with tempfile.TemporaryDirectory() as out:
+            records, rows, _ = self.evidence_fixture(out)
+            body = json.loads(records[1]['body'])
+            body['fds_detected'] = False
+            for rule in body['fds_rules']:
+                rule['triggered'] = False
+            records[1]['body'] = json.dumps(body)
+            row = rows[1].split('|')
+            row[4], row[6] = 'f', '-'
+            rows[1] = '|'.join(row)
+            self.write_results(out, records)
+            Path(out, 'db.log').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+
+    def test_source_criteria_and_metadata_binding_before_rejudgement(self):
+        for change in ('tool', 'criteria', 'run', 'date', 'targets', 'rehashed-criteria'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as out:
+                _, _, meta = self.evidence_fixture(out)
+                if change == 'tool':
+                    meta['tool_sha256'] = '0' * 64
+                elif change in ('criteria', 'rehashed-criteria'):
+                    Path(out, 'criteria.txt').write_text('CHANGED CRITERIA\n', encoding='utf-8')
+                    if change == 'rehashed-criteria':
+                        meta['criteria_sha256'] = hashlib.sha256(Path(out, 'criteria.txt').read_bytes()).hexdigest()
+                elif change == 'run':
+                    meta['run'] = '202610101500'
+                elif change == 'date':
+                    meta['today'] = '2026-10-11'
+                elif change == 'targets':
+                    meta['targets'] = ['192.0.2.99']
+                Path(out, 'meta.json').write_text(json.dumps(meta), encoding='utf-8')
+                Path(out, 'judge.txt').write_bytes(b'ORIGINAL\n')
+                self.assertEqual(rg.judge(out, emit=lambda _: None), 2)
+                self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+                self.assertEqual(Path(out, 'judge.txt').read_bytes(), b'ORIGINAL\n')
+
+    def test_corrupt_json_and_missing_input_stop_without_rewriting_original(self):
+        for path in ('meta.json', 'results.jsonl', 'criteria.txt'):
+            for operation in ('corrupt', 'missing'):
+                with self.subTest(path=path, operation=operation), tempfile.TemporaryDirectory() as out:
+                    self.evidence_fixture(out)
+                    if operation == 'corrupt':
+                        Path(out, path).write_text('{BROKEN', encoding='utf-8')
+                    else:
+                        Path(out, path).unlink()
+                    Path(out, 'judge.txt').write_bytes(b'ORIGINAL\n')
+                    self.assertEqual(rg.judge(out, emit=lambda _: None), 2)
+                    self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 2)
+                    self.assertEqual(Path(out, 'judge.txt').read_bytes(), b'ORIGINAL\n')
+
+    def test_db_crosscheck_does_not_modify_evidence(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.evidence_fixture(out)
+            before = {p.name: p.read_bytes() for p in Path(out).iterdir()}
+            self.assertEqual(rg.crosscheck(out, str(Path(out, 'db.log')), emit=lambda _: None), 0)
+            after = {p.name: p.read_bytes() for p in Path(out).iterdir()}
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
