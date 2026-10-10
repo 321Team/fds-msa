@@ -15,7 +15,7 @@
 
 ## 배포와 원복 인계
 
-실행 위치는 승인된 CI/CD 회차와 정본 클러스터이며, APP Lead가 리뷰·병합된 정확한 Source SHA, Build/Scan 결과, 새 image digest, 대상6개 Pod의 기존 digest/배포 사양, 비중첩 창과 복구 인수를 고정한 후 적용한다. 문서/코드 PR만으로 Push/Deploy를 실행하지 않는다.
+실행 위치는 승인된 CI/CD 회차와 정본 클러스터이며, [현행 #30 이관 결정](https://github.com/321Team/fds-project-baseline/issues/30#issuecomment-6082618226)에 따라 이권욱이 리뷰·병합된 정확한 Source SHA, Build/Scan 결과, 새 image digest, 대상6개 Pod의 기존 digest/배포 사양, 비중첩 창과 복구 인수를 고정한 후 적용한다. 문서/코드 PR만으로 Push/Deploy를 실행하지 않는다. [P1 실행 준비 대조](p1-final-regression-readiness-20261010.md)에 단계별 미확인 입력과 기존 원복/회귀 기준을 연결한다.
 
 1. 현재 전용9090/9091 Prometheus 수집과 업무 health/거래 대조군, 승인 Worker의 local endpoint, 이전 배포 digest를 보존한다. 전용 포트 대신 업무 포트를 scrape하는 소비자가 있으면 먼저 조율한다.
 2. 해당 회차의 승인된 배포 절차로 새 digest를 적용하고 Pod imageID와 Source/Run/Attempt를 연결한다.
@@ -23,4 +23,4 @@
 4. 전용9091/9090 scrape200·지표 증가, health, local endpoint와 기존 Rule/API→DB 회귀 기준을 확인한다. Edge nginx404도 유지해야 한다.
 5. 전용 수집 소실·업무/health 회귀·부분 rollout·예상 외 metrics200이면 다음 승격을 중단한다. 승인된 이전 digest와 배포 사양으로 복귀하고 Pod/endpoint·scrape·업무 대조군을 재확인한다. **이전 digest로 복귀하면 기존 업무 포트 metrics 노출도 돌아오므로 이를 해결 완료로 표시하지 않는다.** 보안 통제를 임의 해제하지 않는다.
 
-Runtime 결과는 새 증적 회차에 시각·호스트·Source/digest·응답·원복을 남겨 독립 편입 리뷰로 연결한다. #15 AC 및 Known Issue 처분은 APP Lead/Review Owner가 판단한다.
+Runtime 결과는 새 증적 회차에 시각·호스트·Source/digest·응답·원복을 남겨 독립 편입 리뷰로 연결한다. #15의 이관된 잔여 AC 및 Known Issue 처분은 이권욱과 해당 Review Owner가 기존 기준에 따라 판단한다. 실행 인수가 원 생산자의 사실 회신·독립 코드/증적 리뷰를 대신하지 않는다.
