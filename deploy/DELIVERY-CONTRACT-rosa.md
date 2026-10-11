@@ -79,7 +79,11 @@ base가 SA 2·Deployment 2·Service 2·NetworkPolicy 3을 한 번에 렌더하�
 | 사람만 | 삭제·이름 변경, SA·NP·Secret 변경, 렌더 밖 수정 | — | 넣지 않음 |
 
 - **`routes/custom-host` — (a) 채택([#5 v3.2](https://github.com/321Team/infra-rosa/issues/5#issuecomment-6109421149)):** `fds-app` Role에 `routes/custom-host` `create` 한 규칙만 추가합니다. 조건은 셋입니다.
-  1. `create`만 부여합니다. `update`가 없으므로 배포 SA는 이미 만든 Route의 host를 바꾸거나 TLS 인증서를 지정할 수 없습니다.
+  1. `create`만 부여합니다.
+     - `update`를 주지 않는 것은 host·subdomain 변경을 막을 뿐입니다. **TLS 불변 통제가 아닙니다.**
+     - OpenShift는 생성할 때 host나 인증서 필드가 있으면 `create`를 확인합니다. host가 같고 인증서만 바뀌는 수정도 `create`로 허용합니다([권욱 rosa#5 리뷰 6109978967](https://github.com/321Team/infra-rosa/issues/5#issuecomment-6109978967) B1, openshift-apiserver `hostassignment` 구현).
+     - 그래서 이번 CI 배포의 TLS 범위를 **렌더 검사로 고정**합니다. Route `spec.tls`에는 `termination: edge`와 `insecureEdgeTerminationPolicy: Redirect`만 허용합니다. `certificate`·`key`·`caCertificate`·`destinationCACertificate`·`externalCertificate` 등 다른 필드가 있으면 FAIL합니다(기본 apps 인증서 사용, #38 회신).
+     - 이 검사는 admission 통제가 아닙니다. 배포 token으로 API를 직접 호출하면 인증서 필드를 설정할 수 있는 잔여 권한이 남습니다. 이 잔여 권한의 수용 여부는 #5 Lead 판단입니다.
   2. 두 Route의 `spec.host`는 계약의 승인 host 1개(`delivery/rosa.yaml` `app.route_host.approved`)와 같아야 합니다. 다르거나 비었거나, 승인 host가 아직 `PENDING`이면 렌더 검사가 FAIL하고 첫 변경 전에 STOP합니다. 승인 host는 ingress domain 확정 뒤 infra-rosa#4 Handoff 2 기준으로 PR을 통해 기록합니다.
   3. 시험 행 A-09·A-10·D-13a·D-13b·D-13c(infra-rosa#5 v3.2 표)는 NOT_RUN입니다. A-10(같은 host 재적용 허용)은 ROSA 실측 전에 가정하지 않습니다. 거부되면 STOP 후 재검토합니다.
 - server-side apply가 다른 field manager와 충돌하면 강제로 덮어쓰지 않고 STOP합니다. 예: named admin이 같은 객체를 먼저 만든 경우.

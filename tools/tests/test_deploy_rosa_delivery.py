@@ -248,6 +248,24 @@ class CheckerTests(unittest.TestCase):
         next(d for d in docs if d["kind"] == "Route")["spec"]["host"] = "other.apps.example.com"
         self.assertTrue(any("one host" in e for e in self.run_check(docs)["errors"]))
 
+    def test_route_tls_is_fixed_to_edge_default_cert(self):
+        # routes/custom-host create는 인증서 필드 지정·변경도 허용한다(rosa#5 리뷰 6109978967 B1). 렌더에서 막는다.
+        self.assertEqual(self.run_check(synthetic_app_render())["result"], "PASS")
+        cases = (
+            lambda tls: tls.update(certificate="-----BEGIN CERTIFICATE-----"),
+            lambda tls: tls.update(key="k"),
+            lambda tls: tls.update(externalCertificate={"name": "x"}),
+            lambda tls: tls.update(termination="passthrough"),
+            lambda tls: tls.pop("insecureEdgeTerminationPolicy"),
+        )
+        for mutate in cases:
+            docs = synthetic_app_render()
+            mutate(next(d for d in docs if d["kind"] == "Route")["spec"]["tls"])
+            self.assertTrue(any("tls must be exactly" in e for e in self.run_check(docs)["errors"]), mutate)
+        docs = synthetic_app_render()
+        del next(d for d in docs if d["kind"] == "Route")["spec"]["tls"]
+        self.assertTrue(any("tls must be exactly" in e for e in self.run_check(docs)["errors"]))
+
     def test_placeholders_block_delivery_unless_ci_flag(self):
         docs = synthetic_app_render()
         for d in docs:

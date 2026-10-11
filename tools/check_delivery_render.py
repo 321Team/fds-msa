@@ -25,6 +25,8 @@ DIGEST_REF = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
 DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 DNS_HOST = re.compile(rf"{DNS_LABEL}(?:\.{DNS_LABEL})*")
 PENDING = "PENDING"
+# 기본 apps 인증서를 쓰는 edge TLS만 허용한다(인증서·키·CA 필드 없음).
+ROUTE_TLS = {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}
 
 
 def dns_host(value):
@@ -139,6 +141,9 @@ def check(text, mode, contract, allow_placeholders=False):
                 hosts.add(host)
             else:
                 errors.append(f"Route/{name}: nonempty DNS host required, got {host!r}")
+            # routes/custom-host create는 인증서 필드 지정·변경도 허용하므로 TLS 범위는 렌더에서 고정한다.
+            if (d.get("spec") or {}).get("tls") != ROUTE_TLS:
+                errors.append(f"Route/{name}: tls must be exactly {ROUTE_TLS} (no certificate/key fields)")
     approved_host = (section.get("route_host") or {}).get("approved")
     if mode == "app":
         if len(hosts) != 1:
