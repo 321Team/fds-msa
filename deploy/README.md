@@ -237,4 +237,4 @@ kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.ya
 
 - `overlays/ocp-lab`: namespace(#34 Lab 경계 `j1-`/`j2-`), 레지스트리(#42), Route host, owner·만료가 정해진 뒤 작성합니다
 - ROSA: `overlays/rosa-app`·`rosa-prereq`는 계약 준비본입니다. 레지스트리·digest(#42·#46), Route host(#38)를 받으면 자리표시값을 바꿉니다
-- ROSA db01 egress: 앱 NetworkPolicy에 넣지 않고 플랫폼 NP `allow-egress-onprem-approved`(infra-rosa#7)와 Pod 라벨 `onprem-egress: "true"`로 엽니다(PROPOSED, [계약 3절](DELIVERY-CONTRACT-rosa.md)). 시험 DB에서 db01로 바꾸는 단계 3은 이 경로를 씁니다
+- ROSA db01 egress: 앱 NetworkPolicy에 넣지 않고 플랫폼 NP `allow-egress-onprem-approved`(infra-rosa#7)와 Pod 라벨 `onprem-egress: "true"`로 엽니다([계약 3절](DELIVERY-CONTRACT-rosa.md), infra-rosa#7 확정). 시험 DB에서 db01로 바꾸는 단계 3은 이 경로를 씁니다

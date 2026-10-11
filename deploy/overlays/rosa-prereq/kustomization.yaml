@@ -1,6 +1,6 @@
 # ROSA 플랫폼 사전 자원 중 #43이 내용을 정하는 것 — 앱 ServiceAccount 2개와 앱 NetworkPolicy 2개.
-# 배포 SA가 아니라 #5/#7 bootstrap 실행자(named admin)가 배포 전에 적용하고 receipt를 남긴다(PROPOSED, #7·#43 정합).
-# default-deny-all은 플랫폼 fds-platform-default-deny(infra-rosa#7 00)와 같은 기능이라 ROSA에서는 넣지 않는다(PROPOSED).
+# 배포 SA가 아니라 #5/#7 bootstrap 실행자(named admin)가 배포 전에 적용하고 receipt를 남긴다(infra-rosa#7 6109434697 확정).
+# default-deny-all은 플랫폼 fds-platform-default-deny(infra-rosa#7 00)와 같은 기능이라 ROSA에서는 넣지 않는다(#7 확정).
 # Secret transaction-api-db-credentials는 여기에도 없다. 값은 저장소 밖 #43/#12 승인 경로로만 만든다.
 # 계약·허용목록: deploy/delivery/rosa.yaml, 설명: deploy/DELIVERY-CONTRACT-rosa.md.
 apiVersion: kustomize.config.k8s.io/v1beta1

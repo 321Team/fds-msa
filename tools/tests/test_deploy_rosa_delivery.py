@@ -22,6 +22,10 @@ OCP = DEPLOY / "components" / "openshift"
 APP = DEPLOY / "overlays" / "rosa-app"
 PREREQ = DEPLOY / "overlays" / "rosa-prereq"
 CONTRACT = yaml.safe_load((DEPLOY / "delivery" / "rosa.yaml").read_text(encoding="utf-8"))
+APPROVED_HOST = "fds-api.apps.example.com"
+# 전달 회차를 흉내 낸 계약: 승인 host가 기록된 상태(저장소 계약은 아직 PENDING).
+DELIVERY = copy.deepcopy(CONTRACT)
+DELIVERY["app"]["route_host"]["approved"] = APPROVED_HOST
 
 
 def load(path):
@@ -65,7 +69,7 @@ def synthetic_app_render():
             if d["metadata"]["name"] == "transaction-api":
                 d["spec"]["template"]["metadata"]["labels"]["onprem-egress"] = "true"
         if d["kind"] == "Route":
-            d["spec"]["host"] = "fds-api.apps.example.com"
+            d["spec"]["host"] = APPROVED_HOST
         docs.append(d)
     return docs
 
@@ -101,6 +105,11 @@ class ContractShapeTests(unittest.TestCase):
         self.assertEqual(targets, ["transaction-api"])
         self.assertEqual(CONTRACT["app"]["onprem_egress_label"], {"transaction-api": "true"})
 
+    def test_repo_contract_route_host_is_pending_or_dns(self):
+        approved = CONTRACT["app"]["route_host"]["approved"]
+        self.assertTrue(approved == cdr.PENDING or cdr.dns_host(approved), approved)
+        self.assertIn("Handoff 2", CONTRACT["app"]["route_host"]["source"])
+
     def test_contract_matches_base_service_accounts_and_secret_refs(self):
         for d in source_objects():
             if d["kind"] != "Deployment":
@@ -111,8 +120,11 @@ class ContractShapeTests(unittest.TestCase):
 
 
 class CheckerTests(unittest.TestCase):
-    def run_check(self, docs, mode="app", allow=False):
-        return cdr.check(dump(docs), mode, CONTRACT, allow)
+    def run_check(self, docs, mode="app", allow=False, contract=DELIVERY):
+        return cdr.check(dump(docs), mode, contract, allow)
+
+    def deployment(self, docs, name):
+        return next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
 
     def test_good_app_render_passes(self):
         out = self.run_check(synthetic_app_render())
@@ -169,6 +181,68 @@ class CheckerTests(unittest.TestCase):
         eng["spec"]["template"]["metadata"]["labels"]["onprem-egress"] = "true"
         self.assertTrue(any("onprem-egress" in e for e in self.run_check(docs)["errors"]))
 
+    def test_image_must_be_exactly_name_at_64_hex_digest(self):
+        """리뷰 B1: '@sha256:' 부분문자열만으로는 통과하지 않는다."""
+        for bad in ("registry.example/fds/app@sha256:bad", f"registry.example/fds/app@sha256:{'A' * 64}",
+                    f"registry.example/fds/app@sha256:{'a' * 63}", f"registry.example/fds/app@sha256:{'a' * 65}",
+                    f"registry.example/fds/app@sha256:{'a' * 64} ", f"@sha256:{'a' * 64}", None):
+            docs = synthetic_app_render()
+            for c in self.deployment(docs, "transaction-api")["spec"]["template"]["spec"]["containers"]:
+                c["image"] = bad
+            out = self.run_check(docs)
+            self.assertEqual(out["result"], "FAIL", bad)
+            self.assertTrue(any("pinned by digest" in e for e in out["errors"]), (bad, out["errors"]))
+        docs = synthetic_app_render()
+        for c in self.deployment(docs, "transaction-api")["spec"]["template"]["spec"]["containers"]:
+            c["image"] = f"registry.example:5000/fds/transaction-api@sha256:{'0123456789abcdef' * 4}"
+        self.assertEqual(self.run_check(docs)["result"], "PASS")
+
+    def test_route_host_empty_or_missing_is_rejected(self):
+        """리뷰 B1: 빈 host·host 키 없음은 원소 1개짜리 집합으로 통과하지 않는다."""
+        for mutate in (lambda spec: spec.__setitem__("host", ""), lambda spec: spec.pop("host"),
+                       lambda spec: spec.__setitem__("host", None), lambda spec: spec.__setitem__("host", "Bad_Host")):
+            docs = synthetic_app_render()
+            for d in docs:
+                if d["kind"] == "Route":
+                    mutate(d["spec"])
+            for allow in (False, True):
+                out = self.run_check(docs, allow=allow)
+                self.assertEqual(out["result"], "FAIL", (allow, out))
+                self.assertTrue(any("nonempty DNS host" in e for e in out["errors"]), out["errors"])
+
+    def test_image_pull_secrets_are_bound_to_approved_secret_refs(self):
+        """리뷰 B2: imagePullSecrets도 승인 Secret 참조 목록과 대조한다."""
+        docs = synthetic_app_render()
+        self.deployment(docs, "transaction-api")["spec"]["template"]["spec"]["imagePullSecrets"] = [
+            {"name": "unapproved-registry-secret"}]
+        out = self.run_check(docs)
+        self.assertEqual(out["result"], "FAIL")
+        self.assertTrue(any("unapproved Secret" in e and "unapproved-registry-secret" in e for e in out["errors"]))
+        allowed = copy.deepcopy(DELIVERY)
+        allowed["app"]["secret_refs"]["transaction-api"].append("unapproved-registry-secret")
+        self.assertEqual(self.run_check(docs, contract=allowed)["result"], "PASS", "계약에 넣은 이름만 허용")
+
+    def test_route_host_must_equal_recorded_approved_host(self):
+        """infra-rosa#5 v3.2 조건 2: 승인 host 1개와 다르면 첫 쓰기 전 STOP."""
+        docs = synthetic_app_render()
+        for d in docs:
+            if d["kind"] == "Route":
+                d["spec"]["host"] = "other.apps.example.com"
+        out = self.run_check(docs)
+        self.assertTrue(any("equal approved host" in e for e in out["errors"]), out["errors"])
+
+    def test_pending_approved_host_blocks_delivery_but_not_ci_render_check(self):
+        pending = copy.deepcopy(DELIVERY)
+        pending["app"]["route_host"]["approved"] = cdr.PENDING
+        out = self.run_check(synthetic_app_render(), contract=pending)
+        self.assertEqual(out["result"], "FAIL")
+        self.assertTrue(any("PENDING" in e for e in out["errors"]), out["errors"])
+        self.assertEqual(self.run_check(synthetic_app_render(), allow=True, contract=pending)["result"], "PASS")
+        broken = copy.deepcopy(DELIVERY)
+        broken["app"]["route_host"]["approved"] = "not a host"
+        errors = self.run_check(synthetic_app_render(), contract=broken)["errors"]
+        self.assertTrue(any("not a DNS host" in e for e in errors), errors)
+
     def test_routes_must_share_one_host(self):
         docs = synthetic_app_render()
         next(d for d in docs if d["kind"] == "Route")["spec"]["host"] = "other.apps.example.com"
@@ -180,23 +254,43 @@ class CheckerTests(unittest.TestCase):
             if d["kind"] == "Route":
                 d["spec"]["host"] = "fds-api.route-host-input-pending.invalid"
         self.assertTrue(any("placeholder" in e for e in self.run_check(docs)["errors"]))
-        self.assertEqual(self.run_check(docs, allow=True)["result"], "PASS")
+        # CI 렌더 확인은 저장소 계약(승인 host PENDING)으로 돈다.
+        self.assertEqual(self.run_check(docs, allow=True, contract=CONTRACT)["result"], "PASS")
+        self.assertEqual(self.run_check(docs, allow=True)["result"], "FAIL", "승인 host가 기록되면 자리표시 host는 불일치")
 
     def test_cli_exit_codes_and_hash_binding(self):
         import tempfile, json, contextlib, io
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp, "app.yaml")
             good.write_text(dump(synthetic_app_render()), encoding="utf-8")
+            contract = Path(tmp, "rosa.yaml")
+            contract.write_text(yaml.safe_dump(DELIVERY, sort_keys=False), encoding="utf-8")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = cdr.main(["--mode", "app", str(good)])
+                rc = cdr.main(["--mode", "app", "--contract", str(contract), str(good)])
             out = json.loads(buf.getvalue())
-            self.assertEqual((rc, out["result"]), (0, "PASS"))
+            self.assertEqual((rc, out["result"], out["approved_route_host"]), (0, "PASS", APPROVED_HOST))
             import hashlib
             self.assertEqual(out["rendered_sha256"], hashlib.sha256(good.read_bytes()).hexdigest())
+            self.assertEqual(out["contract_sha256"], hashlib.sha256(contract.read_bytes()).hexdigest())
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(cdr.main(["--mode", "prereq", str(good)]), 1)
+                self.assertEqual(cdr.main(["--mode", "prereq", "--contract", str(contract), str(good)]), 1)
+                self.assertEqual(cdr.main(["--mode", "app", str(good)]), 1, "저장소 계약은 승인 host PENDING")
                 self.assertEqual(cdr.main(["--mode", "app", str(Path(tmp, "missing.yaml"))]), 2)
+
+    def test_cli_structural_error_is_rc2_not_traceback(self):
+        import tempfile, json, contextlib, io
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp, "app.yaml")
+            good.write_text(dump(synthetic_app_render()), encoding="utf-8")
+            for name, body in (("no-app.yaml", "namespace: fds-app\n"),
+                               ("bad-objects.yaml", "namespace: fds-app\napp:\n  objects: [1]\n")):
+                contract = Path(tmp, name)
+                contract.write_text(body, encoding="utf-8")
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = cdr.main(["--mode", "app", "--contract", str(contract), str(good)])
+                self.assertEqual((rc, json.loads(buf.getvalue())["result"]), (2, "ERROR"), name)
 
 
 class KustomizeRenderTests(unittest.TestCase):
