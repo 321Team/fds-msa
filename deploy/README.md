@@ -13,10 +13,16 @@ deploy/
 ├── components/
 │   ├── openshift/           Route(/api·/readyz, 같은 host, edge TLS) + 라우터 진입·openshift-dns 허용
 │   └── lab-db/              시험용 임시 PostgreSQL — 명시적 opt-in (아래 "시험 DB" 절)
+├── delivery/rosa.yaml       ROSA 전달 허용목록(기계 판독) — tools/check_delivery_render.py가 읽음
+├── DELIVERY-CONTRACT-rosa.md  #43 생산 / #46 소비 배포 입력 계약
 └── overlays/
     ├── p1-onprem/               Phase 1 운영(fds-app) 재현 — 비교 전용, apply하지 않음
-    └── openshift-render-check/  base + openshift + lab-db 렌더 확인 전용 — 자리표시값, apply하지 않음
+    ├── openshift-render-check/  base + openshift + lab-db 렌더 확인 전용 — 자리표시값, apply하지 않음
+    ├── rosa-app/                ROSA 앱 전용 렌더(Deployment·Service·Route) — 배포 SA가 적용. 자리표시값이 남으면 전달 거부
+    └── rosa-prereq/             ROSA 사전 자원 중 앱 SA·앱 NetworkPolicy — #5/#7 실행자가 배포 전 적용
 ```
+
+ROSA 전달은 [DELIVERY-CONTRACT-rosa.md](DELIVERY-CONTRACT-rosa.md)를 따릅니다. 배포 SA가 base 전체를 적용하지 않도록 앱 렌더와 사전 자원 렌더를 나눴습니다.
 
 ## base에 두는 것 / 두지 않는 것
 
@@ -161,7 +167,7 @@ emptyDir라 남는 볼륨이 없습니다. `transaction-api-db-credentials`는 �
 | 0. 기록 | 전환 전 manifest revision(fds-msa SHA), 렌더 SHA-256, Secret **이름**·`db-target` 라벨, NetworkPolicy를 기록합니다 | — |
 | 1. 선행 | #47 A1·A2(db01 출발지 관측·pg_hba/방화벽 변경)가 끝나야 시작합니다 | 시작하지 않음 |
 | 2. 앱 Secret 교체 | `transaction-api-db-credentials`를 db01 접속값(TLS)으로 교체, 라벨 `db-target=onprem-db`. 이때 `fds-lab-db-credentials`와 시험 DB는 남겨 둡니다 | 3단계로 가지 않고 이전 값으로 복구 |
-| 3. overlay 교체 | 시험 DB를 뺀 overlay + db01 egress(Relay 경유 `10.1.93.55/32:5432`, 별도 PR)를 같은 `CTX`·`NS`로 apply하고, `oc --context "$CTX" -n "$NS" rollout restart deployment/transaction-api` 후 `rollout status deployment/transaction-api --timeout=<작업창 상한>`까지 확인 | 아래 "전환 실패 복구" 순서 |
+| 3. overlay 교체 | 시험 DB를 뺀 overlay(ROSA는 `rosa-app`) + db01 egress(Relay 경유 `10.1.93.55/32:5432`. ROSA는 플랫폼 NP 03과 `onprem-egress` 라벨, [계약 3절](DELIVERY-CONTRACT-rosa.md))를 같은 `CTX`·`NS`로 apply하고, `oc --context "$CTX" -n "$NS" rollout restart deployment/transaction-api` 후 `rollout status deployment/transaction-api --timeout=<작업창 상한>`까지 확인 | 아래 "전환 실패 복구" 순서 |
 | 4. 새 경로 검증 | 두 앱 Ready, Route `/readyz`, 저장·조회(p2e2e B1), fds-engine → DB 차단, VPN 끊김·복구(#50) | 아래 "전환 실패 복구" 순서 |
 | 5. 시험 DB 정리 | 4단계 통과 뒤에만 위 "정리와 readback"을 수행합니다 | — |
 
@@ -230,5 +236,5 @@ kubectl kustomize deploy/overlays/openshift-render-check > rendered-openshift.ya
 ## 다음 (아직 없음)
 
 - `overlays/ocp-lab`: namespace(#34 Lab 경계 `j1-`/`j2-`), 레지스트리(#42), Route host, owner·만료가 정해진 뒤 작성합니다
-- `overlays/rosa`: #38 Basic Ready·#42 결정 뒤 작성합니다
-- db01 egress component: #47 전환 단계 3에서 사용합니다
+- ROSA: `overlays/rosa-app`·`rosa-prereq`는 계약 준비본입니다. 레지스트리·digest(#42·#46), Route host(#38)를 받으면 자리표시값을 바꿉니다
+- ROSA db01 egress: 앱 NetworkPolicy에 넣지 않고 플랫폼 NP `allow-egress-onprem-approved`(infra-rosa#7)와 Pod 라벨 `onprem-egress: "true"`로 엽니다(PROPOSED, [계약 3절](DELIVERY-CONTRACT-rosa.md)). 시험 DB에서 db01로 바꾸는 단계 3은 이 경로를 씁니다

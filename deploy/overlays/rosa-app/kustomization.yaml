@@ -1,0 +1,67 @@
+# ROSA 앱 전용 렌더 — 배포 SA(ci-cd/fds-deployer)가 적용하는 #43 → #46 전달 산출물.
+# Deployment·Service·Route만 남긴다. ServiceAccount·NetworkPolicy·Secret·RBAC는 플랫폼 사전 자원이다
+# (overlays/rosa-prereq와 infra-rosa#5·#7, Secret은 #43/#12 승인 경로).
+# 계약·허용목록: deploy/delivery/rosa.yaml, 설명: deploy/DELIVERY-CONTRACT-rosa.md.
+# 레지스트리(#42)·Route host(#38)가 자리표시값(.invalid)인 동안 tools/check_delivery_render.py가 전달을 거부한다.
+# 이 파일만으로 배포 GO가 아니다. 실제 적용은 #46 회차와 실행 직전 receipt 대조를 따른다.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fds-app
+resources:
+  - ../../base
+components:
+  - ../../components/openshift
+labels:
+  - pairs:
+      project: fds-hybrid
+      team: 321team
+    includeSelectors: false
+images:
+  # digest는 #15 승인 기준(a7093136/5e2a081c). 전달 회차의 current/previous digest는 #42·#46 source chain으로 다시 고정한다.
+  - name: transaction-api
+    newName: registry-input-pending.invalid/fds/transaction-api
+    digest: sha256:a7093136d12640da00570c18ed278eacbb8e9ba3637c7d509571346eac45cc33
+  - name: fds-engine
+    newName: registry-input-pending.invalid/fds/fds-engine
+    digest: sha256:5e2a081cd51a957c3fad038b3eab07884c446ea3c2a814a905e3f41c24f67369
+patches:
+  # DB(db01) egress는 플랫폼 NetworkPolicy allow-egress-onprem-approved(infra-rosa#7 03)가 이 Pod 라벨로 연다.
+  # fds-engine에는 붙이지 않는다(DB 접속정보 없음).
+  - target:
+      kind: Deployment
+      name: transaction-api
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/labels/onprem-egress
+        value: "true"
+  # 아래는 배포 SA가 쓰지 않는 플랫폼 사전 자원이다(rosa-prereq·#7). 앱 렌더에서 뺀다.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: transaction-api-sa
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: fds-engine-sa
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny-all
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: transaction-api-allow
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: fds-engine-allow

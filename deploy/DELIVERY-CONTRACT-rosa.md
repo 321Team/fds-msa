@@ -1,0 +1,133 @@
+# ROSA 배포 입력 계약 — #43 생산 / #46 소비 (CONTRACT_PREPARATION)
+
+근거:
+- [#43 배포 입력 계약 보완 요청 6099489688](https://github.com/321Team/fds-project-baseline/issues/43#issuecomment-6099489688)
+- [infra-rosa#5 v3 §3-4](https://github.com/321Team/infra-rosa/issues/5#issuecomment-6108735303)
+- [v3 심층 리뷰 6109084044](https://github.com/321Team/infra-rosa/issues/5#issuecomment-6109084044) 1·2·5번
+- infra-rosa `platform/netpol/00~03`(PR35 merge `b636dec`)
+
+이 문서는 **렌더·계약 준비**입니다.
+- ROSA 배포, 권한 부여, token 발급의 GO가 아닙니다.
+- Phase 1 운영(`overlays/p1-onprem`)은 바꾸지 않습니다.
+- 표의 PROPOSED 항목은 #5·#7 리뷰에서 확정합니다.
+
+## 1. 산출물 두 개
+
+base가 SA 2·Deployment 2·Service 2·NetworkPolicy 3을 한 번에 렌더하면 배포 SA가 SA·NetworkPolicy에서 403을 받습니다. 그래서 같은 base + `components/openshift`를 두 렌더로 나눕니다. Role은 넓히지 않습니다.
+
+| 렌더 | 적용 주체 | 객체 (namespace `fds-app`) |
+|---|---|---|
+| `overlays/rosa-app` | 배포 SA `ci-cd/fds-deployer` (#46 Runner) | Deployment `transaction-api`·`fds-engine`, Service `transaction-api`·`fds-engine`, Route `transaction-api-api`·`transaction-api-readyz` (6개) |
+| `overlays/rosa-prereq` | #5/#7 bootstrap 실행자(named admin), 배포 전 | ServiceAccount `transaction-api-sa`·`fds-engine-sa`, NetworkPolicy `transaction-api-allow`·`fds-engine-allow` (4개) |
+| 어디에도 넣지 않음 | — | NetworkPolicy `default-deny-all` (플랫폼 `fds-platform-default-deny`와 같은 기능, PROPOSED) |
+
+- ConfigMap은 0개입니다. ConfigMap을 추가하려면 이 계약과 `deploy/delivery/rosa.yaml`을 먼저 바꿉니다.
+- 기계 판독 허용목록은 [`delivery/rosa.yaml`](delivery/rosa.yaml)입니다.
+- 시험 `tools/tests/test_deploy_rosa_delivery.py`가 두 렌더와 제외 목록의 합이 base+openshift 전체와 정확히 같은지 확인합니다. 빠지거나 겹치는 객체가 없습니다.
+- `lab-db`는 두 렌더 모두에 넣지 않습니다. ROSA의 DB는 db01(#47)입니다.
+
+## 2. 플랫폼 사전 자원과 receipt (배포 전, 배포 SA 밖)
+
+| 자원 | 생산 | #43이 정하는 것 | receipt에 남길 것 |
+|---|---|---|---|
+| Namespace `fds-app` | #5 | 이름 | 이름·UID·label |
+| SA `transaction-api-sa`, `fds-engine-sa` | #5 (rosa-prereq 적용) | 이름, `automountServiceAccountToken: false`, 추가 binding 없음 | 이름·UID |
+| 앱 NP `transaction-api-allow`, `fds-engine-allow` | #5/#7 (rosa-prereq 적용) — PROPOSED | 규칙 내용(아래 3절) | 이름·UID·내용 SHA |
+| 플랫폼 NP 00~03 | #7 | 앱 쪽 라벨 계약(아래) | 이름·UID·내용 SHA. 03은 자리표시값이 채워진 승인본 |
+| Secret `transaction-api-db-credentials` (key `DATABASE_URL`) | #43/#12 승인 경로 | 이름·key | 이름·resourceVersion (**값 없음**) |
+
+- receipt 생산은 #5(named admin), 소비 판정은 #46입니다(infra-rosa#5 v3 §3-4).
+- **#43이 receipt와 묶을 것:** `rosa-app` 렌더 파일 SHA-256, `delivery/rosa.yaml` SHA-256, fds-msa source commit. 셋 다 `tools/check_delivery_render.py` 출력에 나옵니다.
+- 하나라도 누락·불일치·오래됨이면 **첫 쓰기 전에 STOP**합니다.
+
+## 3. NetworkPolicy 소유와 최종 허용 경로 (PROPOSED, #7·#43 정합)
+
+같은 namespace의 NetworkPolicy는 허용이 **합산**됩니다. 그래서 정책 이름이 아니라 합산 결과로 대조합니다.
+
+| Pod | 방향 | 허용 | 출처 |
+|---|---|---|---|
+| transaction-api | ingress | 라우터 namespace(`policy-group.network.openshift.io/ingress: ""`) → **8000** | 앱 NP(openshift component) |
+| transaction-api | egress | fds-engine **8001** | 앱 NP(base) |
+| transaction-api | egress | openshift-dns 53/5353 UDP·TCP | 앱 NP + 플랫폼 01 (중복, 결과 같음) |
+| transaction-api | egress | db01 `10.1.93.55:5432` | **플랫폼 03**, Pod 라벨 `onprem-egress: "true"`(rosa-app이 붙임). IF-18 승인값으로 03의 자리표시값이 채워진 뒤에만 열림 |
+| fds-engine | ingress | transaction-api → **8001** | 앱 NP(base) |
+| fds-engine | egress | openshift-dns 53/5353 | 앱 NP + 플랫폼 01 |
+| 둘 다 | 그 밖 | 차단 | 플랫폼 00 `fds-platform-default-deny` |
+
+- **앱 NP에는 DB egress를 넣지 않습니다.** DB ACL의 출처를 플랫폼 03 한 곳(IF-18)으로 둡니다. fds-engine에는 `onprem-egress` 라벨을 붙이지 않습니다.
+- 플랫폼 02 `allow-ingress-from-router`는 `route-exposed: "true"` Pod의 8080(probe)용입니다. 앱 Pod에는 이 라벨을 붙이지 않습니다. 앱 8000 진입은 앱 NP가 엽니다.
+- **메트릭 포트 9091·9090으로의 진입은 없습니다.** ROSA 수집 경로는 아직 정해지지 않았습니다(아래 5절).
+- `default-deny-all`을 빼도 기본 차단은 플랫폼 00이 맡습니다. 00이 없으면 기본 차단이 사라지므로 receipt에서 00이 필수입니다.
+
+## 4. 권한과 순서
+
+배포 SA Role(infra-rosa#5 v3 §3-2)과 대조했습니다.
+
+| 단계 | 동작 | 필요한 권한 | Role |
+|---|---|---|---|
+| 공통 | 렌더 검사 `check_delivery_render.py --mode app` PASS + receipt PASS | 없음(로컬) | — |
+| 최초 배포 | `kubectl apply --server-side --field-manager=fds-deployer -f app.yaml` (prune·force-conflicts 없음) | services·deployments·routes `create`/`patch`/`get` | 있음 |
+| 〃 | Route `spec.host` 지정 | `route.openshift.io` **`routes/custom-host` `create`** | **없음 — 아래 확인 필요** |
+| 〃 | `kubectl rollout status deploy/transaction-api deploy/fds-engine --timeout=300s` | deployments·replicasets `get`/`watch`, pods·events `get`/`list` | 있음 |
+| 업데이트 | 새 승인 digest로 다시 렌더 → 같은 apply → rollout status | 위와 같음 | 있음 |
+| 이전 버전 복구 | **직전 승인 렌더 파일(previous digest)을 다시 apply** → rollout status. `rollout undo`는 쓰지 않습니다(렌더 SHA와 결과가 묶이지 않음) | 위와 같음 | 있음 |
+| 사람만 | 삭제·이름 변경, SA·NP·Secret 변경, 렌더 밖 수정 | — | 넣지 않음 |
+
+- **확인 필요 — `routes/custom-host`:** OpenShift는 Route에 `spec.host`를 직접 지정하려면 `routes/custom-host` `create` 권한을 요구합니다. 두 Route가 같은 host로 경로를 나누므로 host를 비울 수 없습니다. 현 Role에는 이 권한이 없어서, 그대로면 첫 Route 생성이 거부될 것으로 봅니다(ROSA 실측 NOT VERIFIED). #5에 다음 중 하나를 요청합니다.
+  - (a) `fds-app` Role에 `routes/custom-host` `create`만 추가
+  - (b) Route를 사전 자원으로 옮기고 배포 SA는 Route를 쓰지 않음
+- server-side apply가 다른 field manager와 충돌하면 강제로 덮어쓰지 않고 STOP합니다. 예: named admin이 같은 객체를 먼저 만든 경우.
+- 배포 SA에 `delete`, `secrets`, `pods/exec`가 필요한 절차는 없습니다.
+
+## 5. monitoring-api
+
+**이번 Runner 배포 대상에 넣지 않습니다.**
+- 두 렌더 모두 `fds-app`만 대상입니다. `monitoring-api` 권한은 자동으로 넓히지 않습니다(infra-rosa#5 §7-2).
+- ROSA 수집 위치는 별도 결정입니다. `openshift-monitoring`/user workload monitoring이나 On-Prem 수집 같은 후보가 있고, #25는 Deferred 후보입니다.
+- 수집 경로가 정해지면 9091·9090 진입 NP와 대상 namespace를 이 계약의 개정으로 추가합니다.
+
+## 6. 배포 token — #46에 넘기는 #43 쪽 입력
+
+| 항목 | #43 입력 | 결정 |
+|---|---|---|
+| 작업 시간 | apply 수 초 + rollout 2개 × 최대 300초. 상한 약 11분 | 근거: replicas 3, readiness 5s/10s, maxSurge 1·maxUnavailable 0, cold pull 포함 |
+| 요청 수명 | 900초로 충분. 1h로 늘릴 근거 없음 | #46 |
+| 첫 쓰기 전 STOP | 실제 `expirationTimestamp`까지 남은 시간이 660초 미만이면 쓰지 않음 | #46 |
+| 실행 중 만료 | 갱신·재시도하지 않고 STOP, 사람 판단 | #46 |
+| audience | 클러스터 API 서버 기본 audience. 앱은 token을 쓰지 않음 | #46 |
+
+## 7. 렌더와 전달 검사
+
+```bash
+kubectl kustomize deploy/overlays/rosa-app > app.yaml
+python3 tools/check_delivery_render.py --mode app app.yaml          # 전달: 자리표시값이 남으면 FAIL
+kubectl kustomize deploy/overlays/rosa-prereq > prereq.yaml
+python3 tools/check_delivery_render.py --mode prereq prereq.yaml
+```
+
+- 종료 코드: 0 = PASS, 1 = FAIL(사유는 JSON), 2 = 입력 오류.
+- 출력에 객체 목록·이미지·Route host·`rendered_sha256`·`contract_sha256`이 나옵니다.
+
+**검사 내용**
+- 허용목록과 객체가 정확히 같은지(빠짐·추가·중복 없음)
+- namespace `fds-app`, cluster-scope 자원 없음
+- Deployment마다 승인 앱 SA 명시, `automountServiceAccountToken: false`
+- 승인된 Secret 참조만 사용
+- digest로 고정된 이미지
+- 고정 UID·privileged·host namespace 없음
+- `onprem-egress` 라벨은 transaction-api에만 있음
+- Route 두 개가 같은 host
+
+`--allow-placeholders`는 CI 렌더 확인 전용입니다. 전달 회차에서 쓰지 않습니다.
+
+## 8. 아직 비어 있는 입력
+
+| 입력 | 출처 | 현재 |
+|---|---|---|
+| 레지스트리·current/previous digest | #42·#46 | 자리표시값(`registry-input-pending.invalid`). digest는 #15 승인값으로 둠 |
+| Route host | #38 Handoff 2 | 자리표시값 |
+| `routes/custom-host` 처리 | #5 | 4절 (a)/(b) |
+| 앱 NP 적용 주체, `default-deny-all` 제외 | #7·#5 | PROPOSED |
+| 플랫폼 03의 IF-18 승인값 | #37·#47 | 대기 |
+| Secret 생성 경로 | #43/#12 | 대기 |
+| 라우터·openshift-dns 라벨, SCC 배정 UID 동작 | #38·#6 PG-03 | NOT VERIFIED |
