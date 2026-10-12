@@ -160,3 +160,15 @@ python3 p2e2e.py crosscheck <PLAN_DIR> <OUT_DIR> <DB_LOG>
 
 - 운영 `fdsdb`에 `SIM_p2_<RUN>_*` 시험 거래가 최대 27행 남는다: B1 11 + B2 12(422 두 건은 저장 안 됨, I01 포함) + B3E 2 + B3E-POST 1 + B3D-POST 1. 기능 시험 거래는 보존한다([#11 결정안 5887795557](https://github.com/321Team/fds-project-baseline/issues/11#issuecomment-5887795557)).
 - `selftest`: `../tests/test_regression_p2e2e.py` 16건(가짜 transaction-api, 실제 AWS·ROSA 호출 없음). 평문 서버에 실제 HTTPS로 붙여 TLS 실패 시 POST 0건으로 멈추는지 확인한다. 생성 `db_query`는 PostgreSQL(`initdb`)이 있으면 임시 클러스터에서 실제로 실행해 JSON null·SQL NULL·Rule 배열을 대조하고, 문자열·객체·숫자 저장값은 조회가 실패하는지 확인한다(CI Ubuntu 러너에서 실행, 없으면 그 1건만 skip).
+
+# P2-E2E-01 장애 사례 시간·대상 판정 (`fault_clock.py`)
+
+[#50](https://github.com/321Team/fds-project-baseline/issues/50) B2 rev3 실행 카드가 쓰는 판정 모듈이다. **장애를 주입하지 않는다.** 네트워크·`oc`·`nft`·시계를 직접 부르지 않고, 호출자가 넘긴 시각과 관측만으로 다음 행동과 허용 timeout을 돌려준다.
+
+- 시간 기준은 최초 변경 요청 **직전** `t_start`다. 적재·scale 확인이 실패해도 상한을 계산할 수 있다.
+- 장애 상한 300초 안에 원복 확인까지 끝나도록 정리 시작을 `t_start + 240`으로 역산한다. 장애 단계 작업(관측·B3E)은 그 전까지만, 남은 시간 이하 timeout으로 시작한다. B3E·POST처럼 중간에 끊으면 의미가 없는 묶음은 필요한 시간 전체가 남았을 때만 시작한다(`can_start_whole`).
+- 원복은 300초를 넘어도 계속 시도하고 상한 위반으로 기록한다. 회복 관측·POST는 `t_start + 900`이 지나면 새로 시작하지 않는다.
+- 정리 전 `inet fds_fault`가 이 회차가 넣은 정의와 같을 때만 삭제한다: 테이블 1개, set `rosa_src` 1개, chain `fwd` 1개, 모든 규칙 comment가 정확히 `fds_fault RUN=<RUN>`(접미사 불가), set 원소가 기록과 같음, chain 본문이 정해진 헤더 + 규칙 1개(목적지 `10.1.93.55`, 포트 5432, `reject with tcp reset`)뿐임, set·chain 밖에 다른 객체(counter·map 등)가 없음. 우선순위는 `-10`과 nft 기본 출력 `filter - 10`을 같은 값으로 보며, 조회는 `nft -y list table inet fds_fault`로 고정한다. 조회 실패·다른 RUN·구조 차이·추가 규칙(무주석·같은 주석)·추가 객체·원소 불일치는 삭제하지 않는다(PR32 리뷰 B3, 재리뷰 B3-R1, 3차 리뷰 R3·R4).
+- 변경·원복 명령은 **승인 Deployment에서만** 만든다(`scale`·`rollout status|restart`·`get`의 정해진 인자만, 전역 옵션 추가 불가). `--context`·`-n`·`--request-timeout`을 항상 붙인다. timeout은 남은 시간을 넘지 않게 그대로 쓰고(0.2초를 1초로 올리지 않음), 0·음수·NaN·Infinity는 거부한다. `rollout restart`는 별도 승인(`allow_restart=True`)이 있을 때만 만든다(PR32 리뷰 B1·B2). 승인 대상(context·server·cluster·namespace UID·deployment UID)과 live가 하나라도 다르면 변경 0으로 멈춘다.
+- **실행 호출부 기한 강제(`fault_runner.py`):** `can_start_whole`은 시작 여부만 본다. 이미 시작한 긴 작업(B3E·POST)은 `run_then_cleanup`이 절대 기한(`work_deadline = t_start + 240 − 3×grace`, 같은 grace를 `run_then_cleanup`에 넘김)에 끊고(terminate → grace 뒤 kill) 결과를 INCONCLUSIVE로 남긴 뒤 원복 함수를 **반드시** 부른다. 운영자 취소(Ctrl-C)·SystemExit에서도 작업을 끝내고 원복을 1회 부른 뒤 취소를 다시 올린다(재리뷰 F1-R2). POSIX에서는 작업을 새 프로세스 그룹으로 띄워 그룹째 끝내고, 출력 회수에도 grace 제한을 둬 후손이 파이프를 물어도 원복이 밀리지 않게 한다. 원복 실패는 숨기지 않고 예외로 올리며, 취소 중이었다면 원래 취소를 원인으로 남긴다. SIGKILL·호스트 소실까지 보장하지는 않는다(#50 rev3 리뷰 잔여 2·3).
+- `selftest`: `../tests/test_regression_fault_clock.py` 23건(적재 성공 뒤 확인 실패, 긴 B3E, 원복 실패·재시도, 300·900초 경계, 대상 불일치, PR32 리뷰 B1·B2·B3·B3-R1·R3·R4 반례: `filter - 10` 표기 허용·다른 우선순위/hook/policy 거부, 테이블 안 다른 객체 거부), `../tests/test_regression_fault_runner.py` 14건(실제 하위 프로세스를 기한에 끊고 원복 호출, SIGTERM 무시 시 kill·후손 프로세스 그룹 종료(POSIX만), 미시작·시작 실패·비0 종료·원복 실패, 취소(KeyboardInterrupt·SystemExit) 시 원복 1회와 취소 전파, 정리 시작 ≤ t_start+240, 종료 대기를 모두 소진하는 최악 경로에서도 정리 시작 ≤ t_start+240).
