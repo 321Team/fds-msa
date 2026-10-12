@@ -6,14 +6,17 @@ from tools.regression import fault_clock as fc
 T0 = 1000.0  # t_start(최초 변경 요청 직전)
 RUN = '202610211300'
 ELEMS = ['10.20.10.11', '10.20.10.12']
+# 실제 주입 정의(#50 B2 초안 6051891259, rev2·rev3 유지)를 `nft list table`로 다시 읽은 모양.
 LISTING = '''table inet fds_fault {
-\tset src {
+\tset rosa_src {
 \t\ttype ipv4_addr
+\t\tflags interval
 \t\telements = { 10.20.10.11, 10.20.10.12 }
 \t}
+
 \tchain fwd {
 \t\ttype filter hook forward priority -10; policy accept;
-\t\tip saddr @src ip daddr 10.1.93.55 tcp dport 5432 counter packets 7 bytes 420 reject with tcp reset comment "fds_fault RUN=202610211300"
+\t\tip saddr @rosa_src ip daddr 10.1.93.55 tcp dport 5432 counter packets 7 bytes 420 reject with tcp reset comment "fds_fault RUN=202610211300"
 \t}
 }'''
 APPROVED = dict(context='rosa-admin/fds', server='https://api.fds.example:443', cluster_id='c-1',
@@ -64,6 +67,25 @@ class ApplyUnconfirmedTests(unittest.TestCase):
         extra = LISTING.replace('10.20.10.12 }', '10.20.10.12, 10.20.10.99 }')
         self.assertFalse(fc.may_delete_fault_table(extra, RUN, ELEMS)['delete'], 'set 원소 불일치')
         self.assertEqual(fc.may_delete_fault_table('table inet other {}', RUN, ELEMS)['reason'], 'UNEXPECTED_LISTING')
+
+    def test_review_b3_counterexamples_are_not_owned(self):
+        """PR32 리뷰 B3 반례: RUN 접미사, 첫 set만 맞고 실제 src set이 다른 경우, 구조가 다른 경우."""
+        suffix = LISTING.replace('RUN=202610211300"', 'RUN=202610211300-other"')
+        self.assertEqual(fc.may_delete_fault_table(suffix, RUN, ELEMS)['delete'], False, 'RUN 접미사')
+        decoy = LISTING.replace('\tset rosa_src {', '\tset decoy {\n\t\ttype ipv4_addr\n\t\telements = { 10.20.10.11, 10.20.10.12 }\n\t}\n\tset rosa_src {') \
+                       .replace('elements = { 10.20.10.11, 10.20.10.12 }\n\t}\n\n', 'elements = { 10.20.10.99 }\n\t}\n\n')
+        self.assertFalse(fc.may_delete_fault_table(decoy, RUN, ELEMS)['delete'], '다른 첫 set(원소 일치) + 실제 src set 불일치')
+        two_rules = LISTING.replace('comment "fds_fault RUN=202610211300"',
+                                    'comment "fds_fault RUN=202610211300"\n\t\tcounter accept comment "other"')
+        self.assertEqual(fc.may_delete_fault_table(two_rules, RUN, ELEMS)['reason'], "RUN_MISMATCH ['fds_fault RUN=202610211300', 'other']")
+        extra_chain = LISTING.replace('\tchain fwd {', '\tchain x {\n\t}\n\tchain fwd {')
+        self.assertEqual(fc.may_delete_fault_table(extra_chain, RUN, ELEMS)['reason'], 'UNEXPECTED_CHAINS')
+        two_tables = LISTING + '\ntable inet fds_fault2 {\n}'
+        self.assertEqual(fc.may_delete_fault_table(two_tables, RUN, ELEMS)['reason'], 'UNEXPECTED_LISTING')
+        no_comment = LISTING.replace(' comment "fds_fault RUN=202610211300"', '')
+        self.assertFalse(fc.may_delete_fault_table(no_comment, RUN, ELEMS)['delete'], 'comment 없음')
+        with self.assertRaises(fc.ClockError):
+            fc.may_delete_fault_table(LISTING, 'RUN with space', ELEMS)
 
 
 class FaultTimelineTests(unittest.TestCase):
@@ -167,13 +189,56 @@ class TargetBindingTests(unittest.TestCase):
 
     def test_change_commands_always_carry_context_and_namespace(self):
         cmd = fc.oc_change(APPROVED, 'scale', 'deployment/fds-engine', '--replicas=0', timeout=7.9)
-        self.assertEqual(cmd[:6], ['oc', '--context', 'rosa-admin/fds', '--request-timeout=7s', '-n', 'fds-app'])
+        self.assertEqual(cmd[:6], ['oc', '--context', 'rosa-admin/fds', '--request-timeout=7.9s', '-n', 'fds-app'])
         self.assertEqual(cmd[6:], ['scale', 'deployment/fds-engine', '--replicas=0'])
-        self.assertIn('--request-timeout=1s', fc.oc_change(APPROVED, 'rollout', 'status', timeout=0.2))
+        st = fc.oc_change(APPROVED, 'rollout', 'status', 'deployment/fds-engine', timeout=30)
+        self.assertEqual(st[6:], ['rollout', 'status', 'deployment/fds-engine', '--timeout=30s'])
+        self.assertEqual(fc.oc_change(APPROVED, 'get', 'deployment/fds-engine', timeout=5)[6:], ['get', 'deployment/fds-engine'])
         with self.assertRaises(fc.ClockError):
-            fc.oc_change(dict(APPROVED, context=''), 'scale', 'x', timeout=5)
+            fc.oc_change(dict(APPROVED, context=''), 'scale', 'deployment/fds-engine', '--replicas=0', timeout=5)
         with self.assertRaises(fc.ClockError):
-            fc.oc_change(APPROVED, 'delete', 'x', timeout=5)
+            fc.oc_change(APPROVED, 'delete', 'deployment/fds-engine', timeout=5)
+
+    def test_review_b1_timeout_never_exceeds_remaining(self):
+        """PR32 리뷰 B1: 300초 직전 0.2초 남았을 때 1초로 올리지 않는다. 0·음수·NaN·Infinity 거부."""
+        b = fc.budget(T0 + 299.8, T0, 'cleanup', 10)
+        self.assertAlmostEqual(b['timeout'], 0.2, places=6)
+        cmd = fc.oc_change(APPROVED, 'scale', 'deployment/fds-engine', '--replicas=1', timeout=b['timeout'])
+        t = [a for a in cmd if a.startswith('--request-timeout=')][0]
+        self.assertLessEqual(float(t.split('=')[1].rstrip('s')), b['timeout'])
+        self.assertEqual(fc.oc_change(APPROVED, 'get', 'deployment/fds-engine', timeout=0.1234567)[3], '--request-timeout=0.123456s',
+                         '자릿수 정리도 올림하지 않음')
+        for bad in (0, -1, float('nan'), float('inf'), True, 1e-9):
+            with self.assertRaises(fc.ClockError, msg=repr(bad)):
+                fc.oc_change(APPROVED, 'get', 'deployment/fds-engine', timeout=bad)
+        with self.assertRaises(fc.ClockError):
+            fc.budget(float('inf'), T0, 'cleanup', 10)
+
+    def test_review_b2_target_and_options_bound_to_approval(self):
+        """PR32 리뷰 B2: 승인 deployment=fds-engine인데 다른 대상·전역 옵션을 넣으면 거부."""
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(APPROVED, 'scale', 'deployment/transaction-api', '--replicas=0',
+                         '--context=phase1', '--namespace=phase1', timeout=5)
+        for args in (('deployment/transaction-api', '--replicas=0'),
+                     ('deployment/fds-engine', '--replicas=0', '--context=phase1'),
+                     ('deployment/fds-engine', '--namespace=phase1'),
+                     ('deployment/fds-engine', '--replicas=-1')):
+            with self.assertRaises(fc.ClockError, msg=repr(args)):
+                fc.oc_change(APPROVED, 'scale', *args, timeout=5)
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(APPROVED, 'rollout', 'undo', 'deployment/fds-engine', timeout=5)
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(APPROVED, 'get', 'deployment/fds-engine', '-o', 'yaml', timeout=5)
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(dict(APPROVED, deployment_uid=''), 'get', 'deployment/fds-engine', timeout=5)
+        # restart는 별도 승인이 있을 때만
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(APPROVED, 'rollout', 'restart', 'deployment/transaction-api', timeout=5)
+        approved_tx = dict(APPROVED, deployment='transaction-api')
+        with self.assertRaises(fc.ClockError):
+            fc.oc_change(approved_tx, 'rollout', 'restart', 'deployment/transaction-api', timeout=5)
+        self.assertEqual(fc.oc_change(approved_tx, 'rollout', 'restart', 'deployment/transaction-api', timeout=5,
+                                      allow_restart=True)[6:], ['rollout', 'restart', 'deployment/transaction-api'])
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@
 - TOTAL(900초): 회복 확인·POST까지 포함한 전체 상한. 넘으면 새 시험을 시작하지 않는다.
   남은 장애 정리는 상한을 넘어도 계속 시도하고 위반으로 기록한다(정리를 포기하지 않음).
 """
+import math
 import re
 
 CAP = 300
@@ -31,8 +32,9 @@ class ClockError(ValueError):
 
 
 def _num(value, name):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 0:
-        raise ClockError(f'{name}: 0 이상 숫자여야 함({value!r})')
+    """0 이상 유한한 숫자만 받는다. bool·NaN·Infinity는 거부한다(PR32 리뷰 B1)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ClockError(f'{name}: 0 이상 유한한 숫자여야 함({value!r})')
     return value
 
 
@@ -132,24 +134,42 @@ def fault_step(now, t_start, *, applied_confirmed, all_four_since, any_lost, o_l
     return {'action': 'HOLD', 'result': None}
 
 
-def may_delete_fault_table(live_listing, run_id, expected_elements):
-    """정리 전 소유 확인. live 원문의 규칙 comment RUN과 set 원소가 이 회차 기록과 같을 때만 삭제한다.
+# 주입 정의(#50 B2 초안 6051891259, rev2·rev3 유지): set 1개 `rosa_src`(ipv4_addr, interval), chain 1개 `fwd`,
+# 규칙 1개(comment "fds_fault RUN=<RUN>"). 이 모양과 다르면 자동 삭제하지 않는다.
+FAULT_SET = 'rosa_src'
+FAULT_CHAIN = 'fwd'
 
-    live_listing: `nft list table inet fds_fault` 원문(조회 실패면 None).
-    조회 실패·다른 RUN·원소 불일치는 삭제하지 않는다(사람 인수). 테이블 부재는 'ABSENT'.
+
+def may_delete_fault_table(live_listing, run_id, expected_elements):
+    """정리 전 소유 확인. live 원문이 이 회차가 넣은 정의와 같을 때만 삭제한다(PR32 리뷰 B3).
+
+    live_listing: `nft list table inet fds_fault` 원문(조회 실패면 None). 빈 원문을 부재로 쓰려면
+    호출자가 rc로 "정상 조회 + 테이블 없음"을 먼저 확인해야 한다(조회 실패를 부재로 바꾸지 않음).
+    확인하는 것: 테이블이 정확히 `inet fds_fault` 1개, set 이름이 정확히 `rosa_src` 1개,
+    chain이 정확히 `fwd` 1개, 모든 규칙 comment가 정확히 `fds_fault RUN=<run_id>`(접미사·추가 문자 불가),
+    그 set 원소 집합이 기록과 같음. 예상 밖 구조는 삭제하지 않고 사람에게 넘긴다.
     """
     if live_listing is None:
         return {'delete': False, 'reason': 'QUERY_FAILED'}
     text = live_listing.strip()
     if not text:
         return {'delete': False, 'reason': 'ABSENT'}
-    if 'table inet fds_fault' not in text:
+    if not run_id or not re.fullmatch(r'[0-9A-Za-z]+', run_id):
+        raise ClockError(f'run_id: {run_id!r}')
+    if not re.match(r'table\s+inet\s+fds_fault\s*\{', text) or len(re.findall(r'\btable\s+\w+\s+\w+', text)) != 1:
         return {'delete': False, 'reason': 'UNEXPECTED_LISTING'}
-    runs = set(re.findall(r'fds_fault RUN=(\w+)', text))
-    if runs != {run_id}:
-        return {'delete': False, 'reason': f'RUN_MISMATCH {sorted(runs)}'}
-    m = re.search(r'elements\s*=\s*\{([^}]*)\}', text)
-    live = {e.strip() for e in m.group(1).split(',') if e.strip()} if m else set()
+    comments = re.findall(r'\bcomment\s+"([^"]*)"', text)
+    if not comments or any(c != f'fds_fault RUN={run_id}' for c in comments):
+        return {'delete': False, 'reason': f'RUN_MISMATCH {sorted(set(comments))}'}
+    if re.findall(r'\bset\s+(\S+)\s*\{', text) != [FAULT_SET]:
+        return {'delete': False, 'reason': 'UNEXPECTED_SETS'}
+    if re.findall(r'\bchain\s+(\S+)\s*\{', text) != [FAULT_CHAIN]:
+        return {'delete': False, 'reason': 'UNEXPECTED_CHAINS'}
+    m = re.search(r'\bset\s+' + FAULT_SET + r'\s*\{\s*type\s+ipv4_addr\s*;?\s*(?:flags\s+interval\s*;?\s*)?'
+                  r'elements\s*=\s*\{([^{}]*)\}\s*;?\s*\}', text)
+    if m is None:
+        return {'delete': False, 'reason': 'UNEXPECTED_SET_FORMAT'}
+    live = {e.strip() for e in m.group(1).split(',') if e.strip()}
     if live != set(expected_elements):
         return {'delete': False, 'reason': f'ELEMENTS_MISMATCH {sorted(live)}'}
     return {'delete': True, 'reason': 'OWNED'}
@@ -168,13 +188,44 @@ def target_mismatch(approved, live):
     return out
 
 
-def oc_change(approved, verb, *args, timeout):
-    """변경·원복 명령을 항상 같은 --context·-n·--request-timeout으로 만든다(실행하지 않음)."""
-    _num(timeout, 'timeout')
-    if verb not in ('scale', 'rollout', 'get'):
+def _duration(seconds):
+    """남은 시간을 넘지 않는 duration 문자열(올림·최소값 상향 없음, 지수 표기 없음)."""
+    _num(seconds, 'timeout')
+    if seconds <= 0:
+        raise ClockError('timeout: 0보다 커야 함')
+    micros = math.floor(seconds * 1_000_000)  # 마이크로초 아래는 버림(올리지 않음)
+    t = format(micros / 1_000_000, '.6f').rstrip('0').rstrip('.')
+    if micros <= 0 or not t or float(t) <= 0 or float(t) > seconds:
+        raise ClockError(f'timeout: 표현 불가({seconds!r})')
+    return t + 's'
+
+
+def oc_change(approved, verb, *args, timeout, allow_restart=False):
+    """승인 Deployment에 결속된 변경·원복 명령만 만든다(실행하지 않음, PR32 리뷰 B1·B2).
+
+    대상은 승인값 `deployment/<approved['deployment']>`에서만 만들고, 허용한 동작 인자 외에는 거부한다.
+    전역 옵션(--context·--namespace 등)을 추가로 받지 않는다. timeout은 남은 시간을 넘지 않게 그대로 쓴다.
+    rollout restart는 실행 카드의 별도 승인이 있을 때만(allow_restart=True) 만든다.
+    live 7개 식별자 확인(target_mismatch)은 실제 호출 직전에 따로 해야 하며 이 함수가 대신하지 않는다.
+    """
+    if any(not (approved or {}).get(k) for k in TARGET_KEYS):
+        raise ClockError('승인 대상 누락')
+    t = _duration(timeout)
+    target = 'deployment/' + approved['deployment']
+    if verb == 'scale':
+        if len(args) != 2 or args[0] != target or not re.fullmatch(r'--replicas=[0-9]+', args[1]):
+            raise ClockError('scale: 승인 Deployment와 --replicas=N만 허용')
+        tail = [target, args[1]]
+    elif verb == 'rollout':
+        if len(args) != 2 or args[1] != target or args[0] not in ('status', 'restart'):
+            raise ClockError('rollout: status|restart 와 승인 Deployment만 허용')
+        if args[0] == 'restart' and not allow_restart:
+            raise ClockError('rollout restart: 별도 승인 없음')
+        tail = [args[0], target] + (['--timeout=' + t] if args[0] == 'status' else [])
+    elif verb == 'get':
+        if args != (target,):
+            raise ClockError('get: 승인 Deployment만 허용')
+        tail = [target]
+    else:
         raise ClockError(f'verb: {verb!r}')
-    missing = [k for k in ('context', 'namespace') if not (approved or {}).get(k)]
-    if missing:
-        raise ClockError(f'승인 대상 누락: {missing}')
-    t = max(MIN_TIMEOUT, int(timeout))
-    return ['oc', '--context', approved['context'], f'--request-timeout={t}s', '-n', approved['namespace'], verb, *args]
+    return ['oc', '--context', approved['context'], '--request-timeout=' + t, '-n', approved['namespace'], verb, *tail]
