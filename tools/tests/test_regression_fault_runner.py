@@ -90,11 +90,15 @@ class CleanupStartBoundTests(unittest.TestCase):
 
     def test_cleanup_starts_by_t_start_plus_240(self):
         grace = 0.5
-        t_start = time.monotonic() - (fc.CLEANUP_START - 2.0)  # 정리 시작까지 2초 남은 상황
+        # 단조 시계 원점은 호스트마다 다르다(갓 부팅한 CI 러너는 수십 초). 실제 경과는 그대로 두고 기준만 옮겨
+        # t_start가 음수가 되지 않게 한다(fault_clock은 음수 시각을 거부).
+        base = 100000.0
+        clock = lambda: time.monotonic() + base  # noqa: E731
+        t_start = clock() - (fc.CLEANUP_START - 2.0)  # 정리 시작까지 2초 남은 상황
         deadline = fr.work_deadline(t_start, fc.CLEANUP_START, grace)
         self.assertAlmostEqual(deadline, t_start + 239.5)
         c = Cleanup()
-        r = fr.run_then_cleanup(SLEEP_LONG, deadline, c, grace=grace)
+        r = fr.run_then_cleanup(SLEEP_LONG, deadline, c, clock=clock, grace=grace)
         self.assertEqual(r['work']['status'], 'KILLED_AT_DEADLINE')
         self.assertLessEqual(r['cleanup_at'] - t_start, fc.CLEANUP_START + SLACK)
         # 정리 단계 timeout은 CAP 안 남은 시간으로 제한된다
