@@ -160,3 +160,14 @@ python3 p2e2e.py crosscheck <PLAN_DIR> <OUT_DIR> <DB_LOG>
 
 - 운영 `fdsdb`에 `SIM_p2_<RUN>_*` 시험 거래가 최대 27행 남는다: B1 11 + B2 12(422 두 건은 저장 안 됨, I01 포함) + B3E 2 + B3E-POST 1 + B3D-POST 1. 기능 시험 거래는 보존한다([#11 결정안 5887795557](https://github.com/321Team/fds-project-baseline/issues/11#issuecomment-5887795557)).
 - `selftest`: `../tests/test_regression_p2e2e.py` 16건(가짜 transaction-api, 실제 AWS·ROSA 호출 없음). 평문 서버에 실제 HTTPS로 붙여 TLS 실패 시 POST 0건으로 멈추는지 확인한다. 생성 `db_query`는 PostgreSQL(`initdb`)이 있으면 임시 클러스터에서 실제로 실행해 JSON null·SQL NULL·Rule 배열을 대조하고, 문자열·객체·숫자 저장값은 조회가 실패하는지 확인한다(CI Ubuntu 러너에서 실행, 없으면 그 1건만 skip).
+
+# P2-E2E-01 장애 사례 시간·대상 판정 (`fault_clock.py`)
+
+[#50](https://github.com/321Team/fds-project-baseline/issues/50) B2 rev3 실행 카드가 쓰는 판정 모듈이다. **장애를 주입하지 않는다.** 네트워크·`oc`·`nft`·시계를 직접 부르지 않고, 호출자가 넘긴 시각과 관측만으로 다음 행동과 허용 timeout을 돌려준다.
+
+- 시간 기준은 최초 변경 요청 **직전** `t_start`다. 적재·scale 확인이 실패해도 상한을 계산할 수 있다.
+- 장애 상한 300초 안에 원복 확인까지 끝나도록 정리 시작을 `t_start + 240`으로 역산한다. 장애 단계 작업(관측·B3E)은 그 전까지만, 남은 시간 이하 timeout으로 시작한다. B3E·POST처럼 중간에 끊으면 의미가 없는 묶음은 필요한 시간 전체가 남았을 때만 시작한다(`can_start_whole`).
+- 원복은 300초를 넘어도 계속 시도하고 상한 위반으로 기록한다. 회복 관측·POST는 `t_start + 900`이 지나면 새로 시작하지 않는다.
+- 정리 전 `inet fds_fault`의 `RUN=` comment와 set 원소가 이 회차 기록과 같을 때만 삭제한다. 조회 실패·다른 RUN·원소 불일치는 삭제하지 않는다.
+- 변경·원복 명령은 승인 대상의 `--context`·`-n`·`--request-timeout`을 항상 붙여 만든다. 승인 대상(context·server·cluster·namespace UID·deployment UID)과 live가 하나라도 다르면 변경 0으로 멈춘다.
+- `selftest`: `../tests/test_regression_fault_clock.py` 17건. 적재 성공 뒤 확인 실패, 긴 B3E, 원복 실패·재시도, 300·900초 경계, 대상 불일치를 확인한다(#50 F1-R1·F2-R1 재검증 항목).
