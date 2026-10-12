@@ -84,6 +84,78 @@ class RunUntilTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             fr.run_then_cleanup([PY, '-c', 'pass'], time.monotonic() + 5, failing_cleanup, grace=0.5)
 
+    @unittest.skipIf(os.name == 'nt', '후손 프로세스 그룹 종료는 POSIX에서만(CI Linux에서 실행)')
+    def test_descendant_holding_pipe_does_not_delay_cleanup(self):
+        """비차단 권고 반례: 부모가 stdout을 물려준 자식(2.5초 sleep)을 만들어도 정리 시작이 밀리지 않는다."""
+        parent = [PY, '-c', 'import subprocess, sys, time; '
+                  'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2.5)"]); time.sleep(30)']
+        c = Cleanup()
+        deadline = time.monotonic() + 0.5
+        r = fr.run_then_cleanup(parent, deadline, c, grace=0.1)
+        self.assertEqual(r['work']['status'], 'KILLED_AT_DEADLINE')
+        self.assertLess(r['cleanup_at'] - deadline, 3 * 0.1 + 1.0, '그룹 전체 종료 + 회수 제한으로 2.5초를 기다리지 않음')
+        self.assertEqual(len(c.calls), 1)
+
+
+class FakeProc:
+    """communicate 첫 호출에서 지정 예외를 내는 가짜 프로세스(취소 모형). 실제 프로세스·신호 없음."""
+    pid = -1
+
+    def __init__(self, exc):
+        self.exc = exc
+        self.calls = 0
+        self.returncode = None
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise self.exc
+        self.returncode = -15
+        return b'', b''
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class CancellationTests(unittest.TestCase):
+    """PR32 재리뷰 F1-R2: 작업 대기 중 취소(KeyboardInterrupt·SystemExit)에도 작업을 끝내고 원복을 1회 부른 뒤 취소를 올린다."""
+
+    def setUp(self):
+        self.signals = []
+        self._orig = fr._signal_group
+        fr._signal_group = lambda proc, sig: self.signals.append(sig)  # 가짜 pid로 실제 신호를 보내지 않게
+
+    def tearDown(self):
+        fr._signal_group = self._orig
+
+    def run_cancel(self, exc, cleanup):
+        proc = FakeProc(exc)
+        return proc, (lambda argv, **k: proc), cleanup
+
+    def test_keyboard_interrupt_cleans_up_once_and_propagates(self):
+        c = Cleanup()
+        proc, popen, _ = self.run_cancel(KeyboardInterrupt(), c)
+        with self.assertRaises(KeyboardInterrupt):
+            fr.run_then_cleanup(['work'], time.monotonic() + 30, c, grace=0.1, popen=popen)
+        self.assertEqual(len(c.calls), 1, '취소돼도 원복 1회')
+        self.assertEqual(self.signals[0], signal.SIGTERM, '작업 그룹 종료부터 시도')
+        self.assertGreaterEqual(proc.calls, 2, '종료 뒤 회수 확인')
+
+    def test_system_exit_cleans_up_once_and_propagates(self):
+        c = Cleanup()
+        _, popen, _ = self.run_cancel(SystemExit(2), c)
+        with self.assertRaises(SystemExit):
+            fr.run_then_cleanup(['work'], time.monotonic() + 30, c, grace=0.1, popen=popen)
+        self.assertEqual(len(c.calls), 1)
+
+    def test_cancel_then_cleanup_failure_keeps_original_cause(self):
+        def failing_cleanup():
+            raise RuntimeError('restore failed')
+        _, popen, _ = self.run_cancel(KeyboardInterrupt(), None)
+        with self.assertRaises(RuntimeError) as ctx:
+            fr.run_then_cleanup(['work'], time.monotonic() + 30, failing_cleanup, grace=0.1, popen=popen)
+        self.assertIsInstance(ctx.exception.__cause__, KeyboardInterrupt, '원복 실패를 올리되 원래 취소를 보존')
+
 
 class CleanupStartBoundTests(unittest.TestCase):
     """F1-R1을 실행 호출부에 연결: t_start+240 직전에 시작한 긴 작업이어도 원복 시작이 240초를 넘지 않는다."""

@@ -87,6 +87,22 @@ class ApplyUnconfirmedTests(unittest.TestCase):
         with self.assertRaises(fc.ClockError):
             fc.may_delete_fault_table(LISTING, 'RUN with space', ELEMS)
 
+    def test_review_b3r1_extra_or_changed_rules_are_not_owned(self):
+        """PR32 재리뷰 B3-R1: chain 안 추가 규칙(무주석·같은 주석)과 목적지/포트가 바뀐 규칙은 삭제하지 않는다."""
+        rule_end = 'comment "fds_fault RUN=202610211300"'
+        plain = LISTING.replace(rule_end, rule_end + '\n\t\tcounter accept')
+        self.assertEqual(fc.may_delete_fault_table(plain, RUN, ELEMS), {'delete': False, 'reason': 'UNEXPECTED_RULES'},
+                         '주석 없는 추가 규칙')
+        dup = LISTING.replace(rule_end, rule_end + '\n\t\tip saddr @rosa_src counter accept ' + rule_end)
+        self.assertEqual(fc.may_delete_fault_table(dup, RUN, ELEMS)['reason'], 'UNEXPECTED_RULES', '같은 주석의 두 번째 규칙')
+        self.assertEqual(fc.may_delete_fault_table(LISTING.replace('daddr 10.1.93.55', 'daddr 10.1.93.54'), RUN, ELEMS)['reason'],
+                         'UNEXPECTED_RULES', '목적지 변경')
+        self.assertEqual(fc.may_delete_fault_table(LISTING.replace('dport 5432', 'dport 22'), RUN, ELEMS)['reason'],
+                         'UNEXPECTED_RULES', '포트 변경')
+        self.assertEqual(fc.may_delete_fault_table(LISTING.replace('reject with tcp reset', 'drop'), RUN, ELEMS)['reason'],
+                         'UNEXPECTED_RULES', '동작 변경')
+        self.assertEqual(fc.may_delete_fault_table(LISTING, RUN, ELEMS), {'delete': True, 'reason': 'OWNED'}, '정상 원문은 계속 허용')
+
 
 class FaultTimelineTests(unittest.TestCase):
     def step(self, elapsed, since=None, lost=False, o=51):

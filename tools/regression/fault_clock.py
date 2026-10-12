@@ -138,6 +138,8 @@ def fault_step(now, t_start, *, applied_confirmed, all_four_since, any_lost, o_l
 # 규칙 1개(comment "fds_fault RUN=<RUN>"). 이 모양과 다르면 자동 삭제하지 않는다.
 FAULT_SET = 'rosa_src'
 FAULT_CHAIN = 'fwd'
+FAULT_DADDR = '10.1.93.55'
+FAULT_DPORT = 5432
 
 
 def may_delete_fault_table(live_listing, run_id, expected_elements):
@@ -147,7 +149,8 @@ def may_delete_fault_table(live_listing, run_id, expected_elements):
     호출자가 rc로 "정상 조회 + 테이블 없음"을 먼저 확인해야 한다(조회 실패를 부재로 바꾸지 않음).
     확인하는 것: 테이블이 정확히 `inet fds_fault` 1개, set 이름이 정확히 `rosa_src` 1개,
     chain이 정확히 `fwd` 1개, 모든 규칙 comment가 정확히 `fds_fault RUN=<run_id>`(접미사·추가 문자 불가),
-    그 set 원소 집합이 기록과 같음. 예상 밖 구조는 삭제하지 않고 사람에게 넘긴다.
+    그 set 원소 집합이 기록과 같음, chain 본문이 정해진 헤더 + 규칙 1개(목적지 10.1.93.55, 포트 5432)뿐임.
+    예상 밖 구조·미인식 출력 형식은 삭제하지 않고 사람에게 넘긴다.
     """
     if live_listing is None:
         return {'delete': False, 'reason': 'QUERY_FAILED'}
@@ -172,6 +175,16 @@ def may_delete_fault_table(live_listing, run_id, expected_elements):
     live = {e.strip() for e in m.group(1).split(',') if e.strip()}
     if live != set(expected_elements):
         return {'delete': False, 'reason': f'ELEMENTS_MISMATCH {sorted(live)}'}
+    # chain 본문은 정해진 헤더와 규칙 정확히 1개뿐이어야 한다. 주석 없는 추가 규칙·같은 주석의 두 번째 규칙·
+    # 목적지/포트가 바뀐 규칙은 이 회차 정의가 아니므로 삭제하지 않는다(PR32 재리뷰 B3-R1).
+    chain = re.search(r'\bchain\s+' + FAULT_CHAIN + r'\s*\{([^{}]*)\}', text)
+    rule = (r'\s*type\s+filter\s+hook\s+forward\s+priority\s+-10\s*;\s*policy\s+accept\s*;\s*'
+            r'ip\s+saddr\s+@' + FAULT_SET + r'\s+ip\s+daddr\s+' + re.escape(FAULT_DADDR) +
+            r'\s+tcp\s+dport\s+' + str(FAULT_DPORT) + r'\s+'
+            r'counter\s+packets\s+[0-9]+\s+bytes\s+[0-9]+\s+reject\s+with\s+tcp\s+reset\s+'
+            r'comment\s+"' + re.escape(f'fds_fault RUN={run_id}') + r'"\s*')
+    if len(comments) != 1 or chain is None or not re.fullmatch(rule, chain.group(1)):
+        return {'delete': False, 'reason': 'UNEXPECTED_RULES'}
     return {'delete': True, 'reason': 'OWNED'}
 
 
