@@ -103,6 +103,37 @@ class ApplyUnconfirmedTests(unittest.TestCase):
                          'UNEXPECTED_RULES', '동작 변경')
         self.assertEqual(fc.may_delete_fault_table(LISTING, RUN, ELEMS), {'delete': True, 'reason': 'OWNED'}, '정상 원문은 계속 허용')
 
+    def test_review_r3_symbolic_priority_is_same_value(self):
+        """PR32 3차 리뷰 R3: nft 기본 출력은 -10을 `filter - 10`으로 보일 수 있다. 같은 값은 허용, 다른 값은 거부."""
+        for form in ('filter - 10', 'filter -10'):
+            self.assertEqual(fc.may_delete_fault_table(LISTING.replace('priority -10', 'priority ' + form), RUN, ELEMS),
+                             {'delete': True, 'reason': 'OWNED'}, form)
+        for form in ('-11', 'filter - 11', 'filter + 10', 'filter', '10'):
+            self.assertEqual(fc.may_delete_fault_table(LISTING.replace('priority -10', 'priority ' + form), RUN, ELEMS)['reason'],
+                             'UNEXPECTED_RULES', form)
+        self.assertEqual(fc.may_delete_fault_table(LISTING.replace('hook forward', 'hook input'), RUN, ELEMS)['reason'],
+                         'UNEXPECTED_RULES', '다른 hook')
+        self.assertEqual(fc.may_delete_fault_table(LISTING.replace('policy accept', 'policy drop'), RUN, ELEMS)['reason'],
+                         'UNEXPECTED_RULES', '다른 policy')
+
+    def test_review_r4_other_objects_in_table_are_not_owned(self):
+        """PR32 3차 리뷰 R4: set·chain 밖의 객체(counter·map·flowtable)나 테이블 뒤 내용이 있으면 삭제하지 않는다."""
+        end = '\n}'
+        self.assertTrue(LISTING.endswith(end))
+        others = {
+            'counter': '\n\tcounter unrelated {\n\t\tpackets 12 bytes 720\n\t}',
+            'map': '\n\tmap m {\n\t\ttype ipv4_addr : verdict\n\t}',
+            'flowtable': '\n\tflowtable f {\n\t\thook ingress priority filter\n\t\tdevices = { eth0 }\n\t}',
+            'table 속성': '\n\tflags dormant',
+        }
+        for name, obj in others.items():
+            listing = LISTING[:-len(end)] + obj + end
+            self.assertFalse(fc.may_delete_fault_table(listing, RUN, ELEMS)['delete'], name)
+        self.assertEqual(fc.may_delete_fault_table(LISTING[:-len(end)] + others['counter'] + end, RUN, ELEMS)['reason'],
+                         'UNEXPECTED_TABLE_CONTENT')
+        self.assertFalse(fc.may_delete_fault_table(LISTING + '\n# trailing', RUN, ELEMS)['delete'], '테이블 뒤 내용')
+        self.assertEqual(fc.may_delete_fault_table(LISTING, RUN, ELEMS), {'delete': True, 'reason': 'OWNED'})
+
 
 class FaultTimelineTests(unittest.TestCase):
     def step(self, elapsed, since=None, lost=False, o=51):

@@ -22,13 +22,14 @@ _POSIX = os.name == 'posix'
 
 
 def work_deadline(t_start, cleanup_start, grace):
-    """장애 단계 작업의 절대 기한. 끊은 뒤 종료 대기(grace)까지 포함해 정리 시작이 t_start+cleanup_start를 넘지 않게 한다.
+    """장애 단계 작업의 절대 기한. 끊은 뒤 종료 대기까지 포함해 정리 시작이 t_start+cleanup_start를 넘지 않게 한다.
 
-    끊기·출력 회수는 각각 최대 grace씩 걸릴 수 있으므로 호출자는 2×grace 여유를 두려면 grace를 그만큼 잡는다.
+    _stop은 TERM 뒤 회수(grace), KILL 뒤 회수(grace), 파이프를 닫은 뒤 wait(grace)까지 최대 3×grace를 쓰므로
+    그만큼 앞당긴다(PR32 3차 리뷰 R5). 호출자는 같은 grace를 run_then_cleanup에 넘겨야 한다.
     """
     if grace < 0:
         raise ValueError('grace: 0 이상')
-    return t_start + cleanup_start - grace
+    return t_start + cleanup_start - 3 * grace
 
 
 def _signal_group(proc, sig):

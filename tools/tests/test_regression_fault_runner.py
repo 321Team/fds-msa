@@ -168,7 +168,7 @@ class CleanupStartBoundTests(unittest.TestCase):
         clock = lambda: time.monotonic() + base  # noqa: E731
         t_start = clock() - (fc.CLEANUP_START - 2.0)  # 정리 시작까지 2초 남은 상황
         deadline = fr.work_deadline(t_start, fc.CLEANUP_START, grace)
-        self.assertAlmostEqual(deadline, t_start + 239.5)
+        self.assertAlmostEqual(deadline, t_start + 238.5)
         c = Cleanup()
         r = fr.run_then_cleanup(SLEEP_LONG, deadline, c, clock=clock, grace=grace)
         self.assertEqual(r['work']['status'], 'KILLED_AT_DEADLINE')
@@ -177,6 +177,38 @@ class CleanupStartBoundTests(unittest.TestCase):
         b = fc.budget(r['cleanup_at'], t_start, 'cleanup', 10)
         self.assertFalse(b['cap_violation'])
         self.assertLessEqual(b['timeout'], fc.CAP - (r['cleanup_at'] - t_start))
+
+    def test_stop_budget_worst_case_keeps_cleanup_by_240(self):
+        """PR32 3차 리뷰 R5: 종료 절차가 모든 대기(TERM 회수·KILL 회수·wait)를 끝까지 써도 정리 시작이 t_start+240 이하.
+
+        가짜 시계·가짜 프로세스로 최악 경로를 만든다(실제 프로세스·신호 없음). 수정 전 공식(−grace)은 244초였다.
+        """
+        now = [1000.0]
+        clock = lambda: now[0]  # noqa: E731
+
+        class Stuck:
+            pid, returncode, stdout, stderr = -1, None, None, None
+
+            def communicate(self, timeout=None):
+                now[0] += timeout
+                raise subprocess.TimeoutExpired('work', timeout)
+
+            def wait(self, timeout=None):
+                now[0] += timeout
+                raise subprocess.TimeoutExpired('work', timeout)
+
+        orig = fr._signal_group
+        fr._signal_group = lambda proc, sig: None  # 가짜 pid로 실제 신호를 보내지 않게
+        try:
+            grace, t_start = 2.0, now[0]
+            deadline = fr.work_deadline(t_start, fc.CLEANUP_START, grace)
+            c = Cleanup()
+            r = fr.run_then_cleanup(['work'], deadline, c, clock=clock, grace=grace, popen=lambda argv, **k: Stuck())
+        finally:
+            fr._signal_group = orig
+        self.assertEqual((r['work']['status'], r['work']['output_incomplete']), ('KILLED_AT_DEADLINE', True))
+        self.assertLessEqual(r['cleanup_at'] - t_start, fc.CLEANUP_START)
+        self.assertEqual(len(c.calls), 1)
 
     def test_work_deadline_rejects_negative_grace(self):
         with self.assertRaises(ValueError):

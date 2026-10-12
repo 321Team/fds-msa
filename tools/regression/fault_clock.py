@@ -145,11 +145,13 @@ FAULT_DPORT = 5432
 def may_delete_fault_table(live_listing, run_id, expected_elements):
     """정리 전 소유 확인. live 원문이 이 회차가 넣은 정의와 같을 때만 삭제한다(PR32 리뷰 B3).
 
-    live_listing: `nft list table inet fds_fault` 원문(조회 실패면 None). 빈 원문을 부재로 쓰려면
+    live_listing: `nft -y list table inet fds_fault` 원문(조회 실패면 None). 우선순위는 숫자(`-10`)와 nft 기본
+    출력의 기호 표기(`filter - 10`)를 같은 값으로 본다(PR32 3차 리뷰 R3). 빈 원문을 부재로 쓰려면
     호출자가 rc로 "정상 조회 + 테이블 없음"을 먼저 확인해야 한다(조회 실패를 부재로 바꾸지 않음).
     확인하는 것: 테이블이 정확히 `inet fds_fault` 1개, set 이름이 정확히 `rosa_src` 1개,
     chain이 정확히 `fwd` 1개, 모든 규칙 comment가 정확히 `fds_fault RUN=<run_id>`(접미사·추가 문자 불가),
-    그 set 원소 집합이 기록과 같음, chain 본문이 정해진 헤더 + 규칙 1개(목적지 10.1.93.55, 포트 5432)뿐임.
+    그 set 원소 집합이 기록과 같음, chain 본문이 정해진 헤더 + 규칙 1개(목적지 10.1.93.55, 포트 5432)뿐임,
+    set·chain을 뺀 나머지가 테이블 외곽뿐임(counter·map 등 다른 객체 불가).
     예상 밖 구조·미인식 출력 형식은 삭제하지 않고 사람에게 넘긴다.
     """
     if live_listing is None:
@@ -178,13 +180,24 @@ def may_delete_fault_table(live_listing, run_id, expected_elements):
     # chain 본문은 정해진 헤더와 규칙 정확히 1개뿐이어야 한다. 주석 없는 추가 규칙·같은 주석의 두 번째 규칙·
     # 목적지/포트가 바뀐 규칙은 이 회차 정의가 아니므로 삭제하지 않는다(PR32 재리뷰 B3-R1).
     chain = re.search(r'\bchain\s+' + FAULT_CHAIN + r'\s*\{([^{}]*)\}', text)
-    rule = (r'\s*type\s+filter\s+hook\s+forward\s+priority\s+-10\s*;\s*policy\s+accept\s*;\s*'
+    rule = (r'\s*type\s+filter\s+hook\s+forward\s+priority\s+(?:-10|filter\s*-\s*10)\s*;\s*policy\s+accept\s*;\s*'
             r'ip\s+saddr\s+@' + FAULT_SET + r'\s+ip\s+daddr\s+' + re.escape(FAULT_DADDR) +
             r'\s+tcp\s+dport\s+' + str(FAULT_DPORT) + r'\s+'
             r'counter\s+packets\s+[0-9]+\s+bytes\s+[0-9]+\s+reject\s+with\s+tcp\s+reset\s+'
             r'comment\s+"' + re.escape(f'fds_fault RUN={run_id}') + r'"\s*')
     if len(comments) != 1 or chain is None or not re.fullmatch(rule, chain.group(1)):
         return {'delete': False, 'reason': 'UNEXPECTED_RULES'}
+    # 확인한 set·chain 두 구간을 빼면 테이블 외곽만 남아야 한다. counter·map·flowtable 같은 다른 객체가 있으면
+    # 테이블째 지울 때 회차 정의 밖의 객체까지 지우게 되므로 삭제하지 않는다(PR32 3차 리뷰 R4).
+    cursor, pieces = 0, []
+    for start, end in sorted((m.span(), chain.span())):
+        if start < cursor:
+            return {'delete': False, 'reason': 'UNEXPECTED_LISTING'}
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    if not re.fullmatch(r'table\s+inet\s+fds_fault\s*\{\s*\}', ''.join(pieces)):
+        return {'delete': False, 'reason': 'UNEXPECTED_TABLE_CONTENT'}
     return {'delete': True, 'reason': 'OWNED'}
 
 
