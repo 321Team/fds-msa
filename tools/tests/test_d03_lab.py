@@ -120,6 +120,46 @@ class D03Contracts(unittest.TestCase):
             with self.assertRaises(ValueError): lab.authorize(plan,changed,now)
 
 
+class PodmanTmpfsContract(unittest.TestCase):
+    def test_execute_db_mounts_use_podman_supported_options_and_group_write(self):
+        # Exercise the argv assembled by execute, stopping before any create.
+        # Podman v6.1.0 pkg/util/mount_opts.go accepts size/mode, not uid/gid.
+        with tempfile.TemporaryDirectory() as temp:
+            driver=lab.Lab(lab.make_plan(RUN),temp,dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=15))
+            def cmd(*args,**kwargs):
+                if args[0]=='info': output='true'
+                elif args[0]=='ps': output=''
+                elif args[:2]==('image','inspect'):
+                    image=args[2]
+                    output=json.dumps([{'Id':'a'*64 if image==lab.IMAGES['db'] else image,
+                                       'RepoDigests':[image], 'Config':{'User':'26'}}])
+                else: self.fail('Unexpected Podman command before DB create: '+str(args))
+                return subprocess.CompletedProcess(args,0,output,'')
+            def create(role,image,network,extra):
+                self.assertEqual((role,image,network),('db',lab.IMAGES['db'],'none'))
+                self.assertIn('--user=26:0',extra)
+                mounts={}
+                for arg in extra:
+                    if not arg.startswith('--tmpfs='): continue
+                    path,options=arg.removeprefix('--tmpfs=').split(':',1)
+                    fields=dict((part.split('=',1)+[None])[:2] for part in options.split(','))
+                    self.assertLessEqual(set(fields),{'rw','size','mode'})
+                    mounts[path]=fields
+                self.assertEqual(mounts['/var/lib/pgsql']['size'],'768m')
+                self.assertEqual(mounts['/var/run/postgresql']['size'],'16m')
+                for path in ('/var/lib/pgsql','/var/run/postgresql'):
+                    mode=int(mounts[path]['mode'],8)
+                    self.assertEqual(mode & 0o070,0o070)  # UID26:GID0 can write/search.
+                    self.assertEqual(mode & 0o007,0)      # No world access added.
+                raise RuntimeError('STOP_BEFORE_CONTAINER_CREATION')
+            driver.cmd=cmd
+            driver.create=Mock(side_effect=create)
+            with patch.object(lab,'runner_worker_active',return_value=False):
+                with self.assertRaisesRegex(RuntimeError,'STOP_BEFORE_CONTAINER_CREATION'):
+                    driver.execute()
+            driver.create.assert_called_once()
+
+
 class CleanupSafety(unittest.TestCase):
     def test_command_timeout_keeps_redacted_partial_receipt(self):
         with tempfile.TemporaryDirectory() as temp:

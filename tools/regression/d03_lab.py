@@ -370,8 +370,10 @@ class Lab:
             fd=os.open(self.out/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
             with os.fdopen(fd,'w') as f: f.write(text)
         db=self.create('db',IMAGES['db'],'none',['--user=26:0','--memory=768m','--cpus=1',
-            '--tmpfs=/var/lib/pgsql:rw,size=768m,uid=26,gid=0,mode=0770',
-            '--tmpfs=/var/run/postgresql:rw,size=16m,uid=26,gid=0,mode=0770',
+            # Podman 6.1 rejects tmpfs uid=/gid=. The DB keeps UID26:GID0;
+            # mode0770 permits its group to write without world-writable mounts.
+            '--tmpfs=/var/lib/pgsql:rw,size=768m,mode=0770',
+            '--tmpfs=/var/run/postgresql:rw,size=16m,mode=0770',
             '--tmpfs=/tmp:rw,size=64m,mode=1777','--env-file',str(self.out/'db.env'),
             '-v',str(hooks)+':/opt/app-root/src/postgresql-start:ro,z'])
         for _ in range(45):
