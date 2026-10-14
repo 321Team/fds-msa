@@ -3,6 +3,14 @@
 관련: [E2E #20 후속 검토](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6162223765), APP #15, Review #30.
 상태: **코드·실행안 검토용. 신규 Runtime 창/공급/실행은 미승인·미실행.** CODEX_ASSISTED.
 
+### 10/14 21:10 실행 실패 후 수정 검토
+
+위 상태와 아래 준비 관측은 PR34 작성 당시 기록이다. [새 회차 결정](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6167814983)으로 RUN `202610142110`을21:10:13 KST에1회 실행했으나 최초 DB `podman create`가 `unknown mount option "uid=26"`/rc125로 종료됐다. start/POST0, 원본 결과는 `CLEANUP_FAILED`다. CID 미확정 생성 실패를 자동 정리 성공으로 보지 않는 기존 보수적 판정을 유지한다. 21:11:35 읽기 확인은 이번4개 정확 이름 부재·전체컨테이너0·credential파일 부재·POST intent0·claim보존이며 원본 결과를 PASS로 바꾸지 않는다.
+
+수정은 DB의 두 tmpfs에서 Podman6.1이 거부하는 `uid=26,gid=0`만 제거한다. [Podman v6.1.0 옵션 파서](https://github.com/containers/podman/blob/v6.1.0/pkg/util/mount_opts.go)는 tmpfs `size`/`mode`를 허용하고 해당 uid/gid 키는 거부한다. DB 프로세스의 `--user=26:0`, 두 디렉터리의 `mode=0770`, 크기·read-only·cap-drop·network-none·900초 상한은 유지한다. GID0의 쓰기/탐색 권한을 사용하며 world 쓰기나 root 실행으로 바꾸지 않는다. 실제 DB 기동·쓰기 가능 여부는 아직 확인되지 않았으며 다음 허용된 Runtime에서 판정한다.
+
+새 MOCK은 `Lab.execute()`가 조립한 DB 인자를 받아 허용 옵션·UID:GID·group 권한·world 접근 부재·크기 상한을 확인하고 create 전에 중단한다. 실제 Podman 기동 시험을 대신하지 않는다. 이번 claim/실패 원본을 보존하고 자동 재실행하지 않는다. 수정 코드의 독립 리뷰·CI·병합, 새 plan/hash·새 RUN/창 결정이 끝나기 전 서버 번들을 고치거나 추가 컨테이너를 생성하지 않는다. 공급물은 이미 정확 digest/ID로 검증되어 다시 load/pull할 필요가 없다.
+
 ## 목적과 인수 범위
 
 남은 세 경로(engine read timeout, engine HTTP 오류, DB INSERT 실패 rollback/HTTP500)를 배포된 앱의 불변 이미지와 실제 PostgreSQL로 재현한다. 기존 성공 회귀224·부하228, connect-failure90/CR119, DB readiness66을 반복하지 않는다. 전체 정본 Runtime/Phase1 인수와 구분한다.
