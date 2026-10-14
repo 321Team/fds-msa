@@ -352,9 +352,13 @@ class Lab:
         for role, image in IMAGES.items():
             obj=json.loads(self.cmd('image','inspect',image,private=True).stdout)[0]
             save(self.out/(role+'-image.json'),image_record(role,image,obj))
-        stage=self.out/'stage'; stage.mkdir(mode=0o755)
-        code=stage/'code'; code.mkdir(mode=0o755)
-        hooks=stage/'hooks'; hooks.mkdir(mode=0o755)
+        stage=self.out/'stage'; stage.mkdir(mode=0o700)
+        code=stage/'code'; code.mkdir(mode=0o700)
+        hooks=stage/'hooks'; hooks.mkdir(mode=0o700)
+        # The host supervisor uses umask077. mkdir(mode=0755) alone becomes
+        # 0700, which the non-root container UIDs cannot traverse. Only these
+        # nonsecret, read-only bind roots need cross-UID read/search access.
+        for directory in (code,hooks): directory.chmod(0o755)
         for file in ('d03_lab.py','d03_fixture.py'):
             source='tools/regression/'+file; raw=(root/source).read_bytes()
             if sha(raw)!=p['files'][source]: raise ValueError('STAGING_SOURCE_CHANGED')
