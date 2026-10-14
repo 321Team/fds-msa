@@ -1,0 +1,127 @@
+name: End page image smoke
+
+# 엔드페이지(시연용) 이미지를 빌드하고 ROSA restricted-v2와 비슷한 조건으로 띄워 확인한다.
+# 임의 UID(GID 0)·읽기 전용 루트·/tmp만 쓰기·capabilities 없음·Downward API 모양의 메타 파일.
+# 레지스트리 push·artifact 업로드는 하지 않는다(조직 Actions 저장 한도). 결과는 로그와 요약에만 남긴다.
+on:
+  push:
+    branches:
+      - 'app/end-page-*'
+    paths:
+      - 'end-page/**'
+      - '.github/workflows/end-page-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: end-page-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: github.repository == '321Team/fds-msa'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGE: end-page:ci
+      RUN_UID: '1000930000'
+    steps:
+      - name: Checkout source without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Build image and record base digest
+        run: |
+          set -euo pipefail
+          docker build --pull -t "$IMAGE" end-page
+          base="$(sed -n 's/^ARG BASE_IMAGE=//p' end-page/Dockerfile)"
+          {
+            echo "### 빌드"
+            echo "- 기반 이미지: \`$base\`"
+            echo "- 기반 digest: \`$(docker image inspect "$base" --format '{{join .RepoDigests ", "}}')\`"
+            echo "- 결과 이미지 ID: \`$(docker image inspect "$IMAGE" --format '{{.Id}}')\`"
+            echo "- 크기: $(docker image inspect "$IMAGE" --format '{{.Size}}') bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare Downward API style meta files
+        run: |
+          set -euo pipefail
+          # kubelet atomic writer와 같은 모양: 파일은 ..data 심볼릭 링크를 거친다.
+          mkdir -p meta/..2026_10_14_00_00_00.000000001
+          printf 'end-page-ci-test' > meta/..2026_10_14_00_00_00.000000001/pod
+          printf 'off' > meta/..2026_10_14_00_00_00.000000001/tx-demo
+          ln -s ..2026_10_14_00_00_00.000000001 meta/..data
+          ln -s ..data/pod meta/pod
+          ln -s ..data/tx-demo meta/tx-demo
+          chmod -R a+rX meta
+          ls -la meta
+
+      - name: Run like restricted-v2
+        run: |
+          set -euo pipefail
+          docker run -d --name ep \
+            --read-only --tmpfs /tmp:rw,size=16m,mode=1777 \
+            --user "${RUN_UID}:0" --cap-drop ALL --security-opt no-new-privileges \
+            -v "$PWD/meta:/etc/end-meta:ro" -p 18080:8080 "$IMAGE"
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/end/healthz >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          docker logs ep
+          exit 1
+
+      - name: Smoke checks
+        run: |
+          set -uo pipefail
+          B=http://127.0.0.1:18080
+          fails=0
+          echo "### 확인" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 확인 | 기대 | 실제 | 결과 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          check() {  # 이름 기대 실제
+            local r=PASS
+            if [ "$2" != "$3" ]; then r=FAIL; fails=$((fails + 1)); fi
+            echo "$r | $1 | expected=[$2] actual=[$3]"
+            echo "| $1 | \`$2\` | \`$3\` | $r |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          header() { curl -s -D - -o /dev/null "$1" | tr -d '\r' | sed -n "s/^$2: //Ip" | head -1; }
+
+          check "실행 UID" "$RUN_UID" "$(docker exec ep id -u)"
+          check "healthz" "200" "$(code "$B/end/healthz")"
+          check "/end/ 200" "200" "$(code "$B/end/")"
+          check "/end/ 제목" "1" "$(curl -s "$B/end/" | grep -c '이 페이지는 지금 ROSA에서 돌고 있습니다')"
+          check "app.js 200" "200" "$(code "$B/end/app.js")"
+          check "app.css 200" "200" "$(code "$B/end/app.css")"
+          check "app.js type" "application/javascript" "$(header "$B/end/app.js" Content-Type)"
+          check "app.css type" "text/css" "$(header "$B/end/app.css" Content-Type)"
+          check "CSP" "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" "$(header "$B/end/" Content-Security-Policy)"
+          check "nosniff" "nosniff" "$(header "$B/end/" X-Content-Type-Options)"
+          check "X-Frame-Options" "DENY" "$(header "$B/end/" X-Frame-Options)"
+          check "Referrer-Policy" "no-referrer" "$(header "$B/end/" Referrer-Policy)"
+          check "Server 버전 숨김" "nginx" "$(header "$B/end/" Server)"
+          check "/end 리다이렉트" "301" "$(code "$B/end")"
+          check "상대 Location" "/end/" "$(header "$B/end" Location)"
+          check "meta/pod (심볼릭 링크)" "end-page-ci-test" "$(curl -s "$B/end/meta/pod")"
+          check "meta/pod no-store" "no-store" "$(header "$B/end/meta/pod" Cache-Control)"
+          check "meta/tx-demo 기본 off" "off" "$(curl -s "$B/end/meta/tx-demo")"
+          check "/ 404" "404" "$(code "$B/")"
+          check "/metrics 404" "404" "$(code "$B/metrics")"
+          check "/end/meta/ 목록 없음" "404" "$(code "$B/end/meta/")"
+          check "설정 파일 비노출" "404" "$(code "$B/end/end-nginx.conf")"
+          check "경로 탈출 차단" "400" "$(code --path-as-is "$B/end/../../etc/passwd")"
+          check "POST 거부" "403" "$(code -X POST "$B/end/")"
+          check "emerg·crit 없음" "0" "$(docker logs ep 2>&1 | grep -c -E '\[(emerg|crit)\]')"
+          check "Permission denied 없음" "0" "$(docker logs ep 2>&1 | grep -c 'Permission denied')"
+
+          echo "### 결과: 실패 ${fails}건" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fails" -eq 0 ]
+
+      - name: Container log
+        if: always()
+        run: |
+          docker logs ep 2>&1 | tail -50 || true
+          docker rm -f ep >/dev/null 2>&1 || true

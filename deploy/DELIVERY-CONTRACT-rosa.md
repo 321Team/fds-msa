@@ -19,13 +19,13 @@ base가 SA 2·Deployment 2·Service 2·NetworkPolicy 3을 한 번에 렌더하�
 
 | 렌더 | 적용 주체 | 객체 (namespace `fds-app`) |
 |---|---|---|
-| `overlays/rosa-app` | 배포 SA `ci-cd/fds-deployer` (#46 Runner) | Deployment `transaction-api`·`fds-engine`, Service `transaction-api`·`fds-engine`, Route `transaction-api-api`·`transaction-api-readyz` (6개) |
-| `overlays/rosa-prereq` | #5/#7 bootstrap 실행자(named admin), 배포 전 | ServiceAccount `transaction-api-sa`·`fds-engine-sa`, NetworkPolicy `transaction-api-allow`·`fds-engine-allow` (4개) |
+| `overlays/rosa-app` | 배포 SA `ci-cd/fds-deployer` (#46 Runner) | Deployment `transaction-api`·`fds-engine`, Service `transaction-api`·`fds-engine`, Route `transaction-api-api`·`transaction-api-readyz` (6개) + 엔드페이지 Deployment·Service·Route `end-page`(§9) = 9개 |
+| `overlays/rosa-prereq` | #5/#7 bootstrap 실행자(named admin), 배포 전 | ServiceAccount `transaction-api-sa`·`fds-engine-sa`, NetworkPolicy `transaction-api-allow`·`fds-engine-allow` (4개) + 엔드페이지 SA `end-page-sa`·NP `end-page-allow`(§9) = 6개 |
 | 어디에도 넣지 않음 | — | NetworkPolicy `default-deny-all` (플랫폼 `fds-platform-default-deny`와 같은 기능, #7 확정) |
 
 - ConfigMap은 0개입니다. ConfigMap을 추가하려면 이 계약과 `deploy/delivery/rosa.yaml`을 먼저 바꿉니다.
 - 기계 판독 허용목록은 [`delivery/rosa.yaml`](delivery/rosa.yaml)입니다.
-- 시험 `tools/tests/test_deploy_rosa_delivery.py`가 두 렌더와 제외 목록의 합이 base+openshift 전체와 정확히 같은지 확인합니다. 빠지거나 겹치는 객체가 없습니다.
+- 시험 `tools/tests/test_deploy_rosa_delivery.py`가 두 렌더와 제외 목록의 합이 base+openshift+end-page 전체와 정확히 같은지 확인합니다. 빠지거나 겹치는 객체가 없습니다.
 - `lab-db`는 두 렌더 모두에 넣지 않습니다. ROSA의 DB는 db01(#47)입니다.
 
 ## 2. 플랫폼 사전 자원과 receipt (배포 전, 배포 SA 밖)
@@ -126,7 +126,7 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 - 이미지가 `이름@sha256:<64자리 소문자 hex>` 전체 형식으로 고정됨
 - 고정 UID·privileged·host namespace 없음
 - `onprem-egress` 라벨은 transaction-api에만 있음
-- Route 두 개 모두 비어 있지 않은 DNS host이고, 서로 같고, 계약의 승인 host와 같음(승인 host `PENDING`이면 FAIL)
+- Route 세 개(엔드페이지 포함) 모두 비어 있지 않은 DNS host이고, 서로 같고, 계약의 승인 host와 같음(승인 host `PENDING`이면 FAIL)
 - 계약·렌더 구조가 예상과 다르면 traceback 없이 `ERROR`·종료 코드 2
 
 `--allow-placeholders`는 CI 렌더 확인 전용입니다. 이 경우에만 자리표시값과 승인 host `PENDING`을 허용합니다. 전달 회차에서 쓰지 않습니다.
@@ -142,3 +142,32 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 | 플랫폼 03의 IF-18 승인값 | #37·#47 | 대기 |
 | Secret 생성 경로 | #43/#12 | 대기 |
 | 라우터·openshift-dns 라벨, SCC 배정 UID 동작 | #38·#6 PG-03 | NOT VERIFIED |
+
+## 9. 엔드페이지 (시연용, 초안)
+
+발표 시연에서 "ROSA 안에서 실제로 돈다"를 보여 주는 정적 페이지입니다. 같은 Route host의 `/end` 경로에 붙습니다. 이 절은 초안이며 리뷰 전입니다.
+
+| 렌더 | 객체 | 적용 주체 |
+|---|---|---|
+| `rosa-app` | Deployment·Service·Route `end-page` (앱 렌더 6개 → 9개) | 배포 SA |
+| `rosa-prereq` | ServiceAccount `end-page-sa`, NetworkPolicy `end-page-allow` (사전 자원 4개 → 6개) | #5/#7 실행자 |
+
+- **소스:** `end-page/`(HTML·CSS·JS·nginx 설정·Dockerfile), `deploy/components/end-page/`. base와 `p1-onprem`·`openshift-render-check`에는 넣지 않습니다(시험으로 확인).
+- **동작:** 브라우저가 같은 host의 `/readyz`와 `POST /api/v1/transactions`를 부릅니다. end-page Pod 자체는 다른 서비스를 호출하지 않습니다.
+- **권한·경로:** DB·Secret·`onprem-egress` 라벨이 없습니다. NP는 라우터 → 8080만 열고 나가는 연결은 없습니다(DNS 포함).
+- **노출 정보:** Downward API로 Pod 이름(`/end/meta/pod`)과 거래 버튼 표시 여부(`/end/meta/tx-demo`, Pod annotation `fds.321team/tx-demo`, 기본 `off`)만 내보냅니다. ConfigMap은 쓰지 않습니다.
+- **거래 버튼:** 정상·R02·R01(출금 4회)·R07(이체 4회)·R04(occurred_at 02:30 KST) 5개 시나리오. 구성은 `tools/regression/rg.py` P02~P05와 같습니다.
+  - 켜는 시간: **시연 영상 녹화 중에만** `on`, 평소 `off`(2026-10-13 결정). 바꾸면 rollout이 일어납니다.
+  - 데이터: `SIM_end_<RUN>_<ID>` 시험 거래는 #11 결정안(5887795557)대로 보존합니다.
+  - 버튼 표시 여부는 화면 편의일 뿐 보안 통제가 아닙니다. `/api`는 Route로 원래 공개돼 있습니다. 공개 페이지에서 실제 DB에 쓸 수 있다는 점은 보안 검토(#38/infra-rosa#5)에 알립니다.
+- **보안 확인 칸:** p2e2e B2와 같은 판정 3개 — X01 `GET /metrics`가 200이 아님(라우터에서 차단), N06 `transaction_type=refund` → 422, N07 `amount` 누락 → 422(입력 검증에서 차단). 요청 경로(브라우저 → 라우터 → transaction-api → FDS·DB)를 그려 막힌 계층을 빨갛게 표시합니다. 422는 저장되지 않습니다. 거래 버튼과 같은 스위치(녹화 중에만 `on`)로 보입니다.
+- **화면 구성(2026-10-14):** 맨 위 구조 그림(사용자 → 라우터 → transaction-api·fds-engine → VPN → 사내 DB)에 구간 상태를 칠합니다. `/readyz` 200이면 전 구간 초록, JSON 503이면 API만 초록·VPN/DB 빨강, 그 밖은 라우터→API 실패로 봅니다. fds-engine은 직접 조회하지 않고 마지막 거래의 `fds_evaluation_skipped`로 칠합니다(fail-open이면 주황). `/readyz`는 화면이 보이는 동안 10초마다 다시 부릅니다(조회마다 DB ping 1회).
+- **집계판·규칙 보드·자동 시연:** 보낸 거래·탐지·보안 차단·평균 응답 시간과 규칙별 탐지 횟수는 이 브라우저에서 보낸 요청만 셉니다(서버 지표 조회 없음). 자동 시연은 정상 → R02 → R01 → R07 → R04 → X01 → N06 → N07을 차례로 실행합니다(시험 거래 11건). 모두 녹화 스위치가 `on`일 때만 보입니다.
+- **보안 헤더:** CSP(`self`만, 인라인 스크립트 없음), `nosniff`, `no-referrer`, `X-Frame-Options: DENY`. `/end/` 밖 경로는 404, `/end/`는 GET·HEAD만 받습니다.
+- **이미지:** 빌드 전이라 `rosa-app`에 0 digest 자리표시값을 둡니다. `placeholder_markers`에 추가해 전달 검사가 거부합니다. 기반 이미지(UBI nginx 등)와 버전은 리뷰에서 정합니다.
+
+**확인하지 않은 것 (NOT VERIFIED / NOT RUN)**
+- UBI nginx 이미지에서 이 설정으로 임의 UID·읽기 전용 루트로 기동되는지(로컬 컨테이너 런타임 없음)
+- nginx가 Downward API 파일(심볼릭 링크)을 그대로 내보내는지
+- kustomize 실제 렌더 시험(이 PC에 kubectl 없음, CI에서 실행)
+- ROSA 적용 전체

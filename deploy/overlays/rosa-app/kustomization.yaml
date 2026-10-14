@@ -11,6 +11,7 @@ resources:
   - ../../base
 components:
   - ../../components/openshift
+  - ../../components/end-page
 labels:
   - pairs:
       project: fds-hybrid
@@ -24,6 +25,10 @@ images:
   - name: fds-engine
     newName: registry-input-pending.invalid/fds/fds-engine
     digest: sha256:5e2a081cd51a957c3fad038b3eab07884c446ea3c2a814a905e3f41c24f67369
+  # 엔드페이지 이미지는 아직 빌드 전이다. 0 digest는 자리표시값이라 전달 검사가 거부한다(placeholder_markers).
+  - name: end-page
+    newName: registry-input-pending.invalid/fds/end-page
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 patches:
   # DB(db01) egress는 플랫폼 NetworkPolicy allow-egress-onprem-approved(infra-rosa#7 03)가 이 Pod 라벨로 연다.
   # fds-engine에는 붙이지 않는다(DB 접속정보 없음).
@@ -65,3 +70,16 @@ patches:
       kind: NetworkPolicy
       metadata:
         name: fds-engine-allow
+  # 엔드페이지의 사전 자원(SA·NetworkPolicy)도 rosa-prereq 몫이다.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: end-page-sa
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: end-page-allow

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FDS Hybrid · 321Team</title>
+<link rel="stylesheet" href="/end/app.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <p class="eyebrow">321Team · FDS Hybrid</p>
+      <h1>이 페이지는 지금 ROSA에서 돌고 있습니다</h1>
+    </div>
+    <div class="podbox">
+      <span class="label">응답한 Pod</span>
+      <span class="mono" id="pod">확인 중…</span>
+      <button type="button" id="reload">다시 받기</button>
+    </div>
+  </header>
+  <p class="lead">거래가 들어오면 클라우드(ROSA)에서 규칙으로 검사하고, VPN을 지나 사내 DB에 저장합니다. 점이 초록이면 그 구간이 살아 있습니다.</p>
+
+  <!-- 1. 살아 있는 구조 그림: /readyz와 마지막 거래 응답으로 구간 상태를 칠한다 -->
+  <section class="card topo" aria-label="하이브리드 구조와 구간 상태">
+    <div class="node" id="n-user"><span class="dot ok"></span><b>사용자</b><small>브라우저</small></div>
+    <div class="link"></div>
+    <div class="zone">
+      <p class="zone-label">AWS · ROSA</p>
+      <div class="zone-body">
+        <div class="node" id="n-router"><span class="dot"></span><b>라우터</b><small>/api · /readyz · /end</small></div>
+        <div class="link"></div>
+        <div class="stack">
+          <div class="node" id="n-api"><span class="dot"></span><b>transaction-api</b><small>거래 접수 · 저장</small></div>
+          <div class="node" id="n-engine"><span class="dot"></span><b>fds-engine</b><small>규칙 검사</small></div>
+        </div>
+      </div>
+    </div>
+    <div class="link vpn" id="n-vpn"><span>VPN</span></div>
+    <div class="zone onprem">
+      <p class="zone-label">사내 (온프레미스)</p>
+      <div class="zone-body">
+        <div class="node" id="n-db"><span class="dot"></span><b>사내 DB</b><small>db01</small></div>
+      </div>
+    </div>
+  </section>
+  <p class="note topo-note" id="topo-note">구간 상태 확인 중…</p>
+
+  <!-- 3. 이번 시연 집계판: 이 브라우저에서 보낸 요청만 센다(서버 조회 없음) -->
+  <section class="stats" id="stats" hidden>
+    <div class="stat"><span class="label">보낸 거래</span><b id="st-sent">0</b></div>
+    <div class="stat hit"><span class="label">의심거래 탐지</span><b id="st-hit">0</b></div>
+    <div class="stat ok"><span class="label">보안 차단</span><b id="st-block">0 / 3</b></div>
+    <div class="stat"><span class="label">평균 응답</span><b id="st-ms">–</b></div>
+  </section>
+
+  <section class="card" id="tx-card" hidden>
+    <div class="row">
+      <p class="label">거래 직접 보내 보기</p>
+      <!-- 4. 녹화용 자동 시연 -->
+      <button type="button" id="auto" class="primary">자동 시연 시작</button>
+    </div>
+    <p class="note auto-status" id="auto-status"></p>
+    <div class="buttons">
+      <button type="button" data-scenario="N01">1만원 입금 · 정상</button>
+      <button type="button" data-scenario="R02">300만원 입금 · R02 고액</button>
+      <button type="button" data-scenario="R01">1만원 출금 4번 · R01 연속 출금</button>
+      <button type="button" data-scenario="R07">70만원 이체 4번 · R07 분산 이체</button>
+      <button type="button" data-scenario="R04">새벽 2:30 150만원 입금 · R04 심야</button>
+    </div>
+    <ol class="path" id="path">
+      <li>브라우저</li><li>ROSA 라우터</li><li>transaction-api</li><li>fds-engine</li><li>VPN → 사내 DB</li><li class="path-end" id="path-end">판정</li>
+    </ol>
+    <div id="result" class="muted">버튼을 누르면 결과가 여기에 나옵니다.</div>
+    <p class="note">시험 계정(SIM_end_…)으로 실제 DB에 저장됩니다. R01·R07은 같은 계정의 이전 거래를 세므로 4번째 거래에서 잡힙니다. R04는 거래 시각을 새벽 2:30(KST)으로 지정해 보냅니다.</p>
+  </section>
+
+  <section class="card" id="sec-card" hidden>
+    <p class="label">보안 확인 · 허용 안 된 요청은 어디서 막히나</p>
+    <div class="sec-buttons">
+      <button type="button" data-check="X01"><span class="sec-id">X01</span>내부 지표(/metrics) 몰래 보기</button>
+      <button type="button" data-check="N06"><span class="sec-id">N06</span>없는 거래 종류(refund)</button>
+      <button type="button" data-check="N07"><span class="sec-id">N07</span>금액이 빠진 거래</button>
+    </div>
+    <ol class="lane" id="sec-lane">
+      <li><span class="lane-name">브라우저</span><span class="lane-sub">요청 출발</span></li>
+      <li><span class="lane-name">ROSA 라우터</span><span class="lane-sub">허용 경로만 연결</span></li>
+      <li><span class="lane-name">transaction-api</span><span class="lane-sub">입력 검증</span></li>
+      <li><span class="lane-name">FDS · 사내 DB</span><span class="lane-sub">판정 · 저장</span></li>
+    </ol>
+    <div class="verdict" id="sec-verdict" hidden>
+      <svg class="shield" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z"/><path class="shield-mark" d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>
+      <div>
+        <p class="verdict-title" id="sec-title"></p>
+        <p class="mono muted" id="sec-detail"></p>
+      </div>
+    </div>
+    <div class="score" id="sec-score">
+      <span data-score="X01">X01</span><span data-score="N06">N06</span><span data-score="N07">N07</span>
+    </div>
+    <p class="note">막힌 요청은 DB에 저장되지 않습니다.</p>
+  </section>
+
+  <!-- 2. 규칙 보드: 탐지되면 해당 규칙 카드가 켜지고 횟수가 오른다 -->
+  <section class="card">
+    <p class="label">무엇을 의심거래로 보나요</p>
+    <div class="rule-board">
+      <div class="rule" data-rule="R01"><div class="rule-head"><span class="rule-id">R01</span><span class="rule-count" id="rc-R01">0</span></div><p>10분 안에 인출이 3번 이상</p></div>
+      <div class="rule" data-rule="R02"><div class="rule-head"><span class="rule-id">R02</span><span class="rule-count" id="rc-R02">0</span></div><p>한 번에 300만원 이상</p></div>
+      <div class="rule" data-rule="R04"><div class="rule-head"><span class="rule-id">R04</span><span class="rule-count" id="rc-R04">0</span></div><p>새벽 1~5시(KST)에 100만원 이상</p></div>
+      <div class="rule" data-rule="R07"><div class="rule-head"><span class="rule-id">R07</span><span class="rule-count" id="rc-R07">0</span></div><p>1시간 안에 이체 3건 이상, 합계 200만원 이상</p></div>
+    </div>
+    <p class="note">숫자는 이 화면에서 잡힌 횟수입니다. 기준값은 시험용 초안입니다.</p>
+  </section>
+</main>
+<script src="/end/app.js"></script>
+</body>
+</html>

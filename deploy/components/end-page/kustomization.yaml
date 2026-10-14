@@ -1,0 +1,8 @@
+# 엔드페이지(시연용) — ROSA 두 렌더에만 붙인다. P1(p1-onprem)·OCP 렌더 확인에는 넣지 않는다.
+# 앱 렌더(rosa-app): Deployment·Service·Route / 사전 자원(rosa-prereq): ServiceAccount·NetworkPolicy.
+# 나누는 방법은 앱과 같다(각 overlay의 $patch: delete). 계약: deploy/delivery/rosa.yaml.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - end-page.yaml
+  - route.yaml
