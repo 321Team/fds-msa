@@ -12,6 +12,7 @@
 멈추면 이미 보낸 요청이 끝날 때까지(요청마다 TIMEOUT초 이내) 기다린 뒤 종료 코드 2로 끝낸다.
 정상 종료는 남은 요청 0건을 기록하고 종료 코드 0이다.
 """
+import argparse
 import http.client
 import json
 import random
@@ -19,10 +20,12 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from pathlib import Path
 
 TARGETS = ('10.1.93.105', '10.1.93.107', '10.1.93.108')
 PORT = 30080
 STAGES = (('B', 20, 600), ('P', 50, 180))
+REGRESSION_STAGES = (('B', 20, 120), ('P', 50, 120))
 IDLE = 120
 MAX_INFLIGHT = 64
 TIMEOUT = 10
@@ -134,5 +137,38 @@ def run(run_id, out_dir, targets=TARGETS, port=PORT, stages=STAGES, idle=IDLE, m
     return 0
 
 
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('run_id')
+    parser.add_argument('out_dir')
+    parser.add_argument('--profile', choices=('full', 'regression'), default='full',
+                        help='full: existing 21000-request sizing; regression: approved 8400-request gate')
+    args = parser.parse_args(argv)
+    if args.profile == 'full':
+        return run(args.run_id, args.out_dir)
+
+    # The new profile cannot silently append another attempt to existing evidence.
+    # A fresh DB prefix check is still required: different directories do not imply a new RUN.
+    if len(args.run_id) != 12 or any(c not in '0123456789' for c in args.run_id):
+        parser.error('regression RUN must be a 12-digit identifier, fixed before execution')
+    out = Path(args.out_dir)
+    if not out.is_dir():
+        parser.error('create a new output directory before execution')
+    if (out / 'requests.log').exists():
+        parser.error('requests.log already exists; preserve the previous attempt')
+    record = {'profile': 'regression', 'run_id': args.run_id,
+              'stages': REGRESSION_STAGES, 'planned_requests': 8400, 'idle_seconds': IDLE,
+              'max_inflight': MAX_INFLIGHT, 'timeout_seconds': TIMEOUT,
+              'targets': TARGETS, 'port': PORT, 'purpose': 'regression-only; no resource resizing'}
+    try:
+        with (out / 'regression-attempt.json').open('x', encoding='utf-8') as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
+            handle.write('\n')
+    except FileExistsError:
+        parser.error('regression attempt already claimed; no automatic rerun')
+    print('PROFILE regression PLANNED_REQUESTS 8400 IDLE_SECONDS 120', flush=True)
+    return run(args.run_id, args.out_dir, stages=REGRESSION_STAGES)
+
+
 if __name__ == '__main__':
-    sys.exit(run(sys.argv[1], sys.argv[2]))
+    sys.exit(main())
