@@ -11,6 +11,14 @@
 
 새 MOCK은 `Lab.execute()`가 조립한 DB 인자를 받아 허용 옵션·UID:GID·group 권한·world 접근 부재·크기 상한을 확인하고 create 전에 중단한다. 실제 Podman 기동 시험을 대신하지 않는다. 이번 claim/실패 원본을 보존하고 자동 재실행하지 않는다. 수정 코드의 독립 리뷰·CI·병합, 새 plan/hash·새 RUN/창 결정이 끝나기 전 서버 번들을 고치거나 추가 컨테이너를 생성하지 않는다. 공급물은 이미 정확 digest/ID로 검증되어 다시 load/pull할 필요가 없다.
 
+### 10/15 00:01 회차의 bind 디렉터리 접근 실패
+
+PR35의 tmpfs 수정 병합본 `016390855fcec335e941b811123bb11b88015610`으로 [사용자 즉시 착수 결정](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6171377353)에 따라 RUN `202610150000`을 1회 실행했다. DB create/start와 check-container는 통과했으나 schema 조회에서 `alembic_version` 부재로 종료됐다. 원본 로그에 `find: '/opt/app-root/src/postgresql-start': Permission denied`가 있고, 사후 읽기에서 `stage/code`·`stage/hooks`는 실제 `0700`, 파일은 `0644`였다. hooks의 SELinux label은 `container_file_t:s0`였다. 최종 결과 `FAILED`, cleanup_confirmed=true, POST0이며 4개 정확 이름·전체 컨테이너·credential 파일 부재와 claim 보존을 확인했다. 자동 재실행하지 않았다.
+
+보조 supervisor의 비밀 파일 보호용 `umask077`을 상속하면 `mkdir(mode=0755)`도 `0700`이 된다. rootless bind의 host 소유자는 컨테이너 root에 대응하며, DB UID26와 앱 UID10001은 해당 디렉터리를 읽고 탐색할 수 없다. 수정은 비밀값이 없는 두 read-only bind 루트(`code`·`hooks`)만 명시적으로 `chmod(0755)`한다. 출력/부모 stage는 `0700`, credential은 `0600`, bind 내부 파일은 `0644`로 유지한다. umask·SELinux·`:ro,z`·컨테이너 UID/권한/상한을 완화하지 않는다.
+
+POSIX 회귀는 실제 `execute()`의 파일 생성을 umask022/077에서 수행하고 첫 create 직전에 중단하여 디렉터리/파일/credential 권한과 마운트 대상을 검증한다. Windows에서는 해당 POSIX 시험을 SKIP하고 Linux CI에서 확인한다. 이 수정은 아직 새 서버 번들 배치/DB 기동·schema 적용 성공으로 확인되지 않았다. 독립 리뷰·CI·병합과 새 회차/창 결정 전 추가 Runtime을 실행하지 않는다.
+
 ## 목적과 인수 범위
 
 남은 세 경로(engine read timeout, engine HTTP 오류, DB INSERT 실패 rollback/HTTP500)를 배포된 앱의 불변 이미지와 실제 PostgreSQL로 재현한다. 기존 성공 회귀224·부하228, connect-failure90/CR119, DB readiness66을 반복하지 않는다. 전체 정본 Runtime/Phase1 인수와 구분한다.

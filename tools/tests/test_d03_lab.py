@@ -5,9 +5,11 @@ import datetime as dt
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import stat
 import sys
 import tempfile
 import threading
@@ -158,6 +160,51 @@ class PodmanTmpfsContract(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'STOP_BEFORE_CONTAINER_CREATION'):
                     driver.execute()
             driver.create.assert_called_once()
+
+
+@unittest.skipUnless(os.name=='posix','POSIX umask and permission bits required')
+class StagedBindPermissions(unittest.TestCase):
+    def test_execute_keeps_credentials_private_and_bind_roots_readable_under_umask(self):
+        # Exercise real staging filesystem operations, with Podman stopped at
+        # the first create. A non-root UID needs r-x on each mounted root.
+        for mask in (0o022,0o077):
+            with self.subTest(umask=oct(mask)), tempfile.TemporaryDirectory() as temp:
+                out=Path(temp)/'run'; out.mkdir(mode=0o700); out.chmod(0o700)
+                driver=lab.Lab(lab.make_plan(RUN),out,dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=15))
+                def cmd(*args,**kwargs):
+                    if args[0]=='info': output='true'
+                    elif args[0]=='ps': output=''
+                    elif args[:2]==('image','inspect'):
+                        image=args[2]
+                        output=json.dumps([{'Id':'a'*64 if image==lab.IMAGES['db'] else image,
+                                            'RepoDigests':[image],'Config':{'User':'26'}}])
+                    else: self.fail('Unexpected command before staging inspection: '+str(args))
+                    return subprocess.CompletedProcess(args,0,output,'')
+                def create(role,image,network,extra):
+                    self.assertEqual(role,'db')
+                    self.assertIn(str(out/'stage/hooks')+':/opt/app-root/src/postgresql-start:ro,z',extra)
+                    for directory in (out,out/'stage'):
+                        self.assertEqual(stat.S_IMODE(directory.stat().st_mode),0o700)
+                    for name in ('code','hooks'):
+                        directory=out/'stage'/name
+                        self.assertEqual(stat.S_IMODE(directory.stat().st_mode),0o755)
+                        self.assertTrue(list(directory.iterdir()))
+                        for file in directory.iterdir():
+                            self.assertTrue(file.is_file())
+                            self.assertEqual(stat.S_IMODE(file.stat().st_mode),0o644)
+                            self.assertNotIn(file.name,('db.env','api.env'))
+                    for name in ('db.env','api.env'):
+                        self.assertEqual(stat.S_IMODE((out/name).stat().st_mode),0o600)
+                    raise RuntimeError('STOP_BEFORE_CONTAINER_CREATION')
+                driver.cmd=cmd; driver.create=Mock(side_effect=create)
+                previous=os.umask(mask)
+                try:
+                    with patch.object(lab,'runner_worker_active',return_value=False):
+                        with self.assertRaisesRegex(RuntimeError,'STOP_BEFORE_CONTAINER_CREATION'):
+                            driver.execute()
+                finally:
+                    os.umask(previous)
+                driver.create.assert_called_once()
 
 
 class CleanupSafety(unittest.TestCase):
