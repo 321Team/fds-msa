@@ -1,5 +1,7 @@
 # P1-E2E-01 회귀 시험 도구
 
+D-03 잔여 3경로의 새 격리 시험 도구는 [실행 준비 카드](../../docs/p1-d03-isolated-failure-readiness-20261014.md)를 따른다. `d03_lab.py plan`은 오프라인 준비이며 `run`은 정확 입력·독립 검토·별도 실행창이 필요하다. 기존 `rg.py`/P2 도구와 운영 대상은 변경하지 않는다.
+
 P1-E2E-01 [#20](https://github.com/321Team/fds-project-baseline/issues/20) 회귀 시험 2회차(10/5 이미지 전환 [#110](https://github.com/321Team/fds-project-baseline/issues/110) 뒤)에 쓰는 요청·판정 도구다. 1회차([fds-project-evidence#68](https://github.com/321Team/fds-project-evidence/pull/68), RUN `202609291300`, 24 PASS)는 채팅으로 붙여넣은 명령으로 실행했고, 2회차는 같은 케이스와 기준을 이 파일로 고정해 실행한다.
 
 운영 `fdsdb`에 시험 거래를 쓰는 코드라서 실행 전에 독립 코드 리뷰를 받는다(REVIEW_AUTHORITY_POLICY §3). 실행 기록에는 리뷰를 마친 SHA와 실제로 실행한 `rg.py`의 SHA-256이 같음을 남긴다. `rg.py`는 자기 SHA-256을 `criteria.txt`에 적는다.
