@@ -167,7 +167,6 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 - **이미지:** 빌드 전이라 `rosa-app`에 0 digest 자리표시값을 둡니다. `placeholder_markers`에 추가해 전달 검사가 거부합니다. 기반 이미지(UBI nginx 등)와 버전은 리뷰에서 정합니다.
 
 **확인하지 않은 것 (NOT VERIFIED / NOT RUN)**
-- UBI nginx 이미지에서 이 설정으로 임의 UID·읽기 전용 루트로 기동되는지(로컬 컨테이너 런타임 없음)
-- nginx가 Downward API 파일(심볼릭 링크)을 그대로 내보내는지
+- ~~UBI nginx 이미지에서 이 설정으로 임의 UID·읽기 전용 루트로 기동되는지~~, ~~nginx가 Downward API 파일(심볼릭 링크)을 그대로 내보내는지~~ → Docker로 비슷한 조건(UID 1000930000:0, `--read-only`, `/tmp` tmpfs, `--cap-drop ALL`, `no-new-privileges`, `..data` 심볼릭 링크 메타)에서 확인: [End page image smoke 38505615591](https://github.com/321Team/fds-msa/actions/runs/38505615591) 26/26 PASS(2026-10-14, 커밋 66e5150, 기반 `ubi9/nginx-124@sha256:c3b28453…009e`). 실제 OpenShift SCC·kubelet 동작은 아님
 - kustomize 실제 렌더 시험(이 PC에 kubectl 없음, CI에서 실행)
 - ROSA 적용 전체
