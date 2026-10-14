@@ -189,6 +189,23 @@ else: raise AssertionError('Host plan must reject the container layout')
                               capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_staged_probe_reaches_loopback_fixture(self):
+        # Exercise the real CLI and its HTTP helper, with no checkout in stage.
+        # Port occupancy is a preflight failure; never reuse someone else's server.
+        server=fixture.make_server(RUN,18081)
+        thread=threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join,2)
+        self.addCleanup(server.shutdown)
+        result=subprocess.run([sys.executable,'-B',str(self.stage/'d03_lab.py'),
+                               '_probe','18081','/readyz'],cwd=self.stage,
+                              capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        response=json.loads(result.stdout)
+        self.assertEqual(response['status'],200)
+        self.assertEqual(json.loads(response['body']),{})
+
     @unittest.skipUnless(sys.platform=='linux','Linux /proc and /sys readback')
     def test_staged_isolation_subprocess_without_checkout(self):
         result=subprocess.run([sys.executable,'-B',str(self.stage/'d03_lab.py'),'_isolation'],
@@ -302,6 +319,17 @@ class FixtureWireBehavior(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
+
+    def test_lab_helper_get_and_post_reach_actual_fixture(self):
+        result=lab.http(self.server.server_port,'/readyz')
+        self.assertEqual(result['status'],200)
+        body=lab.payload(RUN,'HTTP'); body['transaction_id']=TX
+        capture=io.StringIO()
+        with contextlib.redirect_stdout(capture):
+            result=lab.http(self.server.server_port,'/evaluate',body)
+        self.assertEqual(result['status'],500)
+        self.assertEqual(json.loads(result['body']),{'fixture':'D03_EXPECTED_ENGINE_HTTP500'})
+        self.assertIn(TX,capture.getvalue())
 
     def test_actual_http500_and_inbound_transaction_logging(self):
         body=lab.payload(RUN,'HTTP'); body['transaction_id']=TX

@@ -6,7 +6,7 @@ The host driver creates only labeled containers; all share a network=none namesp
 import argparse
 import datetime as dt
 import hashlib
-import http.client
+import http.client as http_client
 import json
 import os
 from pathlib import Path
@@ -107,7 +107,7 @@ def payload(run, case):
 
 
 def http(port, path, body=None):
-    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=8)
+    conn = http_client.HTTPConnection('127.0.0.1', port, timeout=8)
     start = time.monotonic()
     try:
         conn.request('POST' if body is not None else 'GET', path,

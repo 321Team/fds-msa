@@ -105,6 +105,19 @@ python3 -B tools/regression/d03_lab.py run /approved/path/plan.json /home/server
 7. DB768MiB/API256MiB/engine256MiB/fixture128MiB, CPU각1/1/0.5/0.25, pids128, 컨테이너 자동 수명900초. 작업은 최대660초 또는 창 종료120초 전 중 이른 시점까지만 진행한다. 현재 host 자원이 이 상한을 감당할 때만 진입한다.
 8. 장애/예상외 응답/로그 미확보/회복 실패 시 남은 POST를 중단하고 정리한다. 다시 실행하려면 새 RUN·별도 결정이 필요하다.
 
+### 컨테이너 없는 helper 사전 점검
+
+독립 재검토에서 드러난 `http()`/`http.client` 이름 충돌은 모듈을 `http_client`로 별칭 import하여 수정했다. HTTP helper 자체의 실제 GET/POST와 두 파일만 staging한 CLI `_probe`를 검증한다. 이 점검은 실제 회차의 claim·이미지 import·컨테이너 생성 **전에**, 검토한 bundle의 Runner 고정 checkout에서 아래 두 시험으로 수행한다.
+
+```text
+python3 -B -m unittest -v tools.tests.test_d03_lab.StagedInvocation.test_staged_probe_reaches_loopback_fixture tools.tests.test_d03_lab.FixtureWireBehavior.test_lab_helper_get_and_post_reach_actual_fixture
+```
+
+- 전제: Runner/UID1000의 검토한 checkout, Python3 표준 라이브러리, `127.0.0.1:18081`을 이 점검 동안 독점할 수 있음. 포트 점유 시 기존 프로세스를 종료하거나 연결을 재사용하지 않고 점검을 중단한다.
+- 동작: 임시 폴더에 도구 두 파일만 복사하고 로컬 fixture를 연다. 별도 Python 프로세스의 `_probe 18081 /readyz`와 helper GET은200, 합성 HTTP 케이스 POST는 fixture의 의도한500/marker를 받아야 한다. POST 대상은 별도 loopback fixture이며 실제 API/engine/DB로 전달하지 않는다. 합성 RUN은 selftest 값이고 실제 RUN·1회 claim을 만들지 않는다.
+- 정상: 두 시험 OK/rc0, fixture 서버·소유 스레드·임시 폴더 정리. 명령/시각/HEAD·코드 SHA/stdout/stderr/rc를 준비 증적으로 보존한다. subprocess는10초 상한이며 예외 시에도 fixture를 닫는다.
+- 실패: image import와 실제 회차에 진입하지 않고 원본을 보존한다. helper 점검 성공은 컨테이너/앱·DB Runtime 성공이나 신규 실행창 승인이 아니다. Runner 점검 실제 수행 여부는 별도 기록한다.
+
 ## 복구·정리와 원본 보존
 
 - 시험 SQL trigger는 DB 케이스 직후 finally에서 제거한다. 예상 실패 중단이어도 임시 DB 컨테이너만 정리한다. 운영 DB의 rollback이나 설정 원복은 이 시험에 포함되지 않는다.
