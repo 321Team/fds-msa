@@ -29,6 +29,29 @@ python3 gen3.py <RUN> <OUT_DIR> > <OUT_DIR>/stages.log 2>&1
 - 출력: `<OUT_DIR>/requests.log`(한 줄에 `시작epoch 단계 Worker 유형 상태코드 지연ms`), 표준 출력(`START`·`END`·`DRAINED`·`IDLE START`·`IDLE END` epoch, 30초마다 보낸 수·진행 중 요청 수·누적 상태 코드, 마지막 `DONE` 또는 `FAIL`). 30초마다 로그를 디스크에 쓴다.
 - 표준 라이브러리만 쓴다(Python 3.6 이상).
 
+### 이미지 전환 후 축약 회귀
+
+[기존 결정안 v2 §8](https://github.com/321Team/fds-project-baseline/issues/15#issuecomment-5885861552)의
+20 rps 120초 → 50 rps 120초를 `--profile regression`으로 선택한다(계획 8,400건).
+기존 무부하 120초 관측과 요청·동시성·timeout·자동 중단 방식은 유지한다.
+프로파일을 생략하거나 `--profile full`이면 기존 21,000건 전체 시험이다.
+
+```text
+python3 gen3.py <12자리_RUN> <새_OUT_DIR> --profile regression > <새_OUT_DIR>/stages.log 2>&1
+```
+
+실제 실행창·DB 사전0행·독립 리뷰·현재 형상 확인 후에만 사용한다.
+`regression-attempt.json`을 배타적으로 생성하며 같은 OUT_DIR의 재실행 또는 기존
+`requests.log`가 있으면 전송 전에 중단한다. 다른 OUT_DIR에 같은 RUN을 넣는 것은
+이 검사로 막지 못하므로, DB 조회와 실행 기록으로 RUN을 별도 확인한다.
+진행 중인 실행의 stages.log를 다시 redirection으로 덮어쓰지 않는다.
+
+생성기 rc0은 발사·정리 정상 종료이며 합격 판정이 아니다. 요청 수/HTTP201 외0건,
+Q1~Q3 원본·필수 시계열/유효 샘플, throttle<25%, restart/OOM0 및 기존 Resource
+초과 징후를 따로 판정한다. 이 결과로 Resource를 재산정하지 않는다.
+판정 실패 시 full profile 재시험이 후속이지만 자동 실행하지 않는다.
+[준비 카드](../../docs/p1-short-load-regression-20261014.md)를 따른다.
+
 **fail-close**
 
 | 조건 | 기록 | 동작 |

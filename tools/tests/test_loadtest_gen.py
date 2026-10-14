@@ -4,8 +4,10 @@ import tempfile
 import threading
 import time
 import unittest
+import json
+from unittest.mock import patch
 
-from tools.loadtest.gen3 import run
+from tools.loadtest.gen3 import main, run
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -121,6 +123,36 @@ class LoadGeneratorTests(unittest.TestCase):
         self.assertEqual(len(rows), 40)
         self.assertEqual(sum(1 for row in rows if row[4] == "500"), 10)
         self.assertTrue(lines[-1].split()[1:5] == ["FAIL", "ERROR_THRESHOLD", "outstanding", "0"])
+
+
+class LoadProfileTests(unittest.TestCase):
+    def test_legacy_cli_keeps_full_profile(self):
+        with patch('tools.loadtest.gen3.run', return_value=2) as generate:
+            self.assertEqual(main(['202610141300', 'existing-output']), 2)
+        generate.assert_called_once_with('202610141300', 'existing-output')
+
+    def test_regression_cli_claims_once_and_selects_8400_profile(self):
+        with tempfile.TemporaryDirectory() as out, patch('tools.loadtest.gen3.run', return_value=2) as generate:
+            self.assertEqual(main(['202610141300', out, '--profile', 'regression']), 2)
+            generate.assert_called_once_with('202610141300', out, stages=(('B', 20, 120), ('P', 50, 120)))
+            record = json.loads((Path(out) / 'regression-attempt.json').read_text(encoding='utf-8'))
+            self.assertEqual(sum(rps * seconds for _, rps, seconds in record['stages']), 8400)
+            self.assertEqual(record['idle_seconds'], 120)
+            with self.assertRaises(SystemExit) as stopped:
+                main(['202610141300', out, '--profile', 'regression'])
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertEqual(generate.call_count, 1)
+
+    def test_existing_results_or_invalid_run_never_send_requests(self):
+        with tempfile.TemporaryDirectory() as out, patch('tools.loadtest.gen3.run') as generate:
+            for invalid in ['../../reuse', '20261014130', '２０２６１０１４１３００']:
+                with self.subTest(run_id=invalid), self.assertRaises(SystemExit):
+                    main([invalid, out, '--profile', 'regression'])
+            (Path(out) / 'requests.log').write_text('preserve\n', encoding='utf-8')
+            with self.assertRaises(SystemExit):
+                main(['202610141300', out, '--profile', 'regression'])
+            generate.assert_not_called()
+            self.assertEqual((Path(out) / 'requests.log').read_text(encoding='utf-8'), 'preserve\n')
 
 
 if __name__ == "__main__":
