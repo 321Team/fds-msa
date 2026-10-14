@@ -6,6 +6,7 @@ import http.client
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -162,6 +163,136 @@ class CleanupSafety(unittest.TestCase):
             driver.created=[{'cid':None,'name':'uncertain'}]
             driver.cmd=Mock(return_value=subprocess.CompletedProcess([],1,'',''))
             self.assertFalse(driver.cleanup())
+
+
+class StagedInvocation(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        self.stage=Path(temp.name)/'d03'; self.stage.mkdir()
+        for name in ('d03_lab.py','d03_fixture.py'):
+            shutil.copyfile(TOOLS/name,self.stage/name)
+
+    def test_shallow_container_path_import_needs_no_checkout(self):
+        # A deep tempfile alone misses the original parents[2] failure. Execute
+        # staged bytes with the exact container __file__, in a fresh interpreter.
+        script="""import pathlib,sys
+sys.path.insert(0,sys.argv[1])
+source=pathlib.Path(sys.argv[1],'d03_lab.py').read_bytes()
+scope={'__file__':'/d03/d03_lab.py','__name__':'staged_lab'}
+exec(compile(source,'/d03/d03_lab.py','exec'),scope)
+assert scope['payload']('202610141600','PRE')['amount']==10000
+try: scope['make_plan']('202610141600')
+except ValueError as error: assert str(error)=='HOST_REPOSITORY_REQUIRED'
+else: raise AssertionError('Host plan must reject the container layout')
+"""
+        result=subprocess.run([sys.executable,'-I','-S','-B','-c',script,str(self.stage)],
+                              capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    @unittest.skipUnless(sys.platform=='linux','Linux /proc and /sys readback')
+    def test_staged_isolation_subprocess_without_checkout(self):
+        result=subprocess.run([sys.executable,'-B',str(self.stage/'d03_lab.py'),'_isolation'],
+                              cwd=self.stage,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(result.stdout)
+        self.assertIn('lo',data['interfaces'])
+        self.assertIsInstance(data['ipv4_routes'],list)
+        self.assertTrue(data['namespace'].startswith('net:['))
+
+
+class HostPreflight(unittest.TestCase):
+    def test_podman_and_docker_config_id_formats_preserve_raw(self):
+        for role in ('api','engine'):
+            image=lab.IMAGES[role]
+            for raw in (image,image.removeprefix('sha256:')):
+                obj={'Id':raw,'Config':{'User':'1000'},'RepoDigests':[]}
+                record=lab.image_record(role,image,obj)
+                self.assertEqual(record['id'],raw)
+                self.assertEqual(record['canonical_config_id'],image)
+
+    def test_malformed_or_wrong_config_id_cannot_be_replaced_by_digest(self):
+        image=lab.IMAGES['api']
+        for raw in ('a'*64,'sha256:'+'a'*64,'','abc','sha512:'+'a'*64,None,123,'g'*64,'sha256:'+image):
+            obj={'Id':raw,'Digest':image,'RepoDigests':[image],'Config':{'User':'1000'}}
+            with self.subTest(raw=raw),self.assertRaises(ValueError):
+                lab.image_record('api',image,obj)
+
+    def test_db_requires_exact_repo_digest_not_config_id(self):
+        image=lab.IMAGES['db']
+        obj={'Id':'a'*64,'RepoDigests':[image],'Config':{'User':'26'}}
+        self.assertEqual(lab.image_record('db',image,obj)['canonical_config_id'],'sha256:'+'a'*64)
+        obj['RepoDigests']=[]; obj['Digest']=image.split('@')[1]
+        with self.assertRaisesRegex(ValueError,'DB_DIGEST_MISMATCH'): lab.image_record('db',image,obj)
+
+    def test_process_exit_race_still_checks_remaining_workers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            proc=Path(temp)
+            for pid in ('123','456'): (proc/pid).mkdir()
+            with patch.object(Path,'iterdir',return_value=iter([proc/'123',proc/'456'])):
+                with patch.object(Path,'read_text',side_effect=[FileNotFoundError(), 'Runner.Worker\n']):
+                    self.assertTrue(lab.runner_worker_active(proc))
+            with patch.object(Path,'iterdir',return_value=iter([proc/'123',proc/'456'])):
+                with patch.object(Path,'read_text',side_effect=[ProcessLookupError(), 'python3\n']):
+                    self.assertFalse(lab.runner_worker_active(proc))
+
+    def test_process_permission_failure_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            proc=Path(temp); (proc/'123').mkdir()
+            with patch.object(Path,'read_text',side_effect=PermissionError()):
+                with self.assertRaises(PermissionError): lab.runner_worker_active(proc)
+
+
+class CaseEvidence(unittest.TestCase):
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        self.out=Path(temp.name)
+        self.driver=lab.Lab(lab.make_plan(RUN),self.out,dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=15))
+
+    def prepare(self,case):
+        response,before,after,rows=evidence(case)
+        for row in rows: row.update(lab.payload(RUN,case))
+        self.driver.metrics=Mock(side_effect=[before,after])
+        self.driver.inside=Mock(return_value=subprocess.CompletedProcess([],0,json.dumps(response),''))
+        return response,rows
+
+    def test_invalid_db_fields_keep_response_and_rows_before_rejection(self):
+        response,rows=self.prepare('PRE'); rows[0]['amount']=999
+        self.driver.sql=Mock(return_value=json.dumps(rows))
+        with self.assertRaisesRegex(ValueError,'DB_REQUEST_FIELDS'): self.driver.run_case('PRE','api','db')
+        result=json.loads((self.out/'PRE-result.json').read_text())
+        self.assertEqual(result['response'],response)
+        self.assertEqual(result['rows'],rows)
+        self.driver.inside.assert_called_once()
+
+    def test_primary_and_trigger_cleanup_errors_both_preserved(self):
+        response,_=self.prepare('DB'); response['status']=201
+        self.driver.inside.return_value.stdout=json.dumps(response)
+        cleanup=RuntimeError('drop failed '+self.driver.password)
+        self.driver.sql=Mock(side_effect=['','[]',cleanup])
+        with self.assertRaisesRegex(ValueError,'DB_FAILURE_CONTRACT') as caught:
+            self.driver.run_case('DB','api','db')
+        self.assertIs(caught.exception.__cause__,cleanup)
+        errors=json.loads((self.out/'DB-errors.json').read_text())
+        self.assertEqual(errors['primary']['message'],'DB_FAILURE_CONTRACT')
+        self.assertEqual(errors['trigger_cleanup']['message'],'drop failed <REDACTED>')
+        self.assertTrue((self.out/'DB-result.json').exists())
+        self.assertIn('DROP TRIGGER',self.driver.sql.call_args.args[1])
+        self.driver.inside.assert_called_once()
+
+    def test_cleanup_failure_alone_still_stops_after_one_post(self):
+        self.prepare('DB'); self.driver.sql=Mock(side_effect=['','[]','','1'])
+        with self.assertRaisesRegex(ValueError,'TRIGGER_NOT_REMOVED'): self.driver.run_case('DB','api','db')
+        errors=json.loads((self.out/'DB-errors.json').read_text())
+        self.assertIsNone(errors['primary'])
+        self.assertEqual(errors['trigger_cleanup']['message'],'TRIGGER_NOT_REMOVED')
+        self.driver.inside.assert_called_once()
+
+    def test_interrupt_still_removes_trigger_and_is_not_hidden(self):
+        self.prepare('DB'); self.driver.inside.side_effect=KeyboardInterrupt()
+        self.driver.sql=Mock(side_effect=['','','0'])
+        with self.assertRaises(KeyboardInterrupt): self.driver.run_case('DB','api','db')
+        self.assertIn('DROP TRIGGER',self.driver.sql.call_args_list[1].args[1])
+        self.driver.inside.assert_called_once()
 
 
 class FixtureWireBehavior(unittest.TestCase):

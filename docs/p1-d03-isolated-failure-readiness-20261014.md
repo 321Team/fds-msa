@@ -22,11 +22,14 @@
 |---|---|
 | 15:45 Runner | hostname cicd-runner01, uid1000, Podman 6.1.0/rootless=true, 컨테이너0, Runner.Worker0 |
 | 16:00 용량·기능 | 메모리 available 8,872MiB, `/home` 가용 약42.8GiB(15:45); create의 network/pull/timeout/stop-timeout 옵션 존재 |
+| 16:26 이미지 ID 형식 | Podman6.1.0의 기존 캐시 이미지 `image inspect` JSON `Id`·`--format '{{.Id}}'` 모두 접두사 없는64자리. 형식 검증 후 `sha256:` 형태로 정규화하여 앱 config ID를 비교하고 원본 ID도 보존 |
 | 기존 앱 공급물 | TBS38395350748 원본의 두 OCI archive가 그대로 존재하고 SHA256 일치(아래 표) |
 | 로컬 이미지 | 두 앱·시험 DB가 Podman store에 없음. load/pull 미실행 |
 | 검증 | 새 도구의 정적·합성/loopback fixture selftest를 수행. 실제 앱/DB 컨테이너 통합, Runtime, 독립 승인, 새 실행창은 별도 |
 
 관측 시점의 상태이며 실제 실행 직전 다시 확인한다. 로컬 조회 원본·collector·receipt는 `deliverables/phase1-d03-preparation-20261014/{runner-inventory,supply-read-v2}/`에 보존한다. 최초 공급 조회는 검색 결과 수 제한에서 중단됐고 파일 경로를 두 고정 archive로 좁힌 뒤 위 결과를 수집했다. 두 조회 모두 host 변경/컨테이너 실행 0이다.
+
+PR34 독립 리뷰의 두 차단사항은 저장소 경로 계산을 host 전용 명령으로 지연하고, 이미지 config ID의 접두사를 검증·정규화하도록 수정했다. `/d03/d03_lab.py` 얕은 경로에서 import·host 명령 거부를 별도 프로세스로 검사하며, Linux CI는 두 파일만 복사한 경로에서 `_isolation` subprocess도 실행한다. 16:26 기존 이미지 조회 원본은 `deliverables/phase1-d03-review-fix-20261014/podman-id-read/`에 보존한다. 수정 코드의 독립 재검토는 별도다.
 
 ## 고정 입력과 공급 준비
 
@@ -40,6 +43,8 @@
 운영 manifest는 API `sha256:338b8a2871507ce8b42deedc916b26e350577ee6efd18df23d7ff2dd4b17dff0`, engine `sha256:8b257adb08b6d381f72b66d3386efea6112a8f072ecfafcbcd463bcd1c3be89d`다. OCI import 후 RepoDigest alias가 없어도 **검증된 config ID**로 실행하며, 두 ID와 manifest의 원 연결은 위 TBS/Push/Deploy 증적을 사용한다.
 
 시험 DB는 기존 [lab-db](../deploy/README.md#시험-db--componentslab-db-명시적-opt-in)의 `quay.io/sclorg/postgresql-16-c9s@sha256:d33717fd33c1a4b11afef94568d0c20812a19d62fb8c633fadee1e491e2edd4a`를 제안한다. 새 이미지 출처의 P1 시험 사용·공급 허용, 현재 공급 가능성/보안 검토는 실행 전 확정한다. 과거 P2용 고정만으로 승인된 것으로 보지 않는다.
+
+16:29 Runner의 `skopeo inspect --no-creds --tls-verify=true --raw/--config` 읽기 전용 조회는 모두 rc0이었다. 공개 registry index 원문 SHA는 위 `d33717…`과 일치하고, linux/amd64 manifest는 `sha256:862cf9364c60a1c47f1721b4700302a959969a09091a8434b3c64949730ed1f1`이다. 선택 config의 SHA는 `d0614d16e62078e0d1b6b55d86e834225988348162a0abb608944fa37a1091ef`, User26, linux/amd64를 확인했다. 메타데이터 조회는 공급 경로·고정 대상 확인이며 이미지 취약점 검사, 계층 다운로드/import, 기동 검증, 사용 승인이 아니다. 원본·receipt는 `deliverables/phase1-d03-review-fix-20261014/db-registry-metadata-read/`에 보존한다.
 
 **아래 공급 명령은 향후 확정된 공급 범위/창에서만 사용한다. 현재 실행하지 않았다.** 위치는 Runner/UID1000. 앱 archive 경로는 `/home/server01_cicd-runner/FDS_CICD_AppWorkflow.3_geu2kf/build-scan/`이다. 두 SHA를 재확인한 뒤 해당 archive만 `podman load --input <고정 경로>`로 import한다. DB는 승인된 공급 경로에서 **위 digest 그대로** 공급한다. `podman pull --tls-verify=false`, latest 태그, 임의 대체 이미지, Harbor Robot 재등록을 사용하지 않는다. 도구 자체에는 load/pull 기능이 없고 `--pull=never`만 사용한다. DB RepoDigest나 앱 config ID가 다르면 컨테이너 생성 전에 중단한다.
 
@@ -106,7 +111,7 @@ python3 -B tools/regression/d03_lab.py run /approved/path/plan.json /home/server
 - 정확 CID와 `fds.d03.run=<RUN>` 라벨을 함께 확인한 이 회차 컨테이너만 역순 제거한다. 로그 수집 timeout이 소유 컨테이너 정리를 건너뛰게 하지 않는다. 다른 라벨·조회 실패면 삭제하지 않고 `CLEANUP_FAILED`로 남긴다.
 - create 결과가 불명확하고 객체가 안 보이는 경우도 정리 성공으로 단정하지 않는다. 같은 user가 기록된 **정확 이름/CID·라벨**을 다시 조회해 인계한다. 무차별 prune/kill/rm은 금지한다.
 - 자동900초 수명은 실행 프로세스 소실 때 컨테이너가 계속 서비스하는 시간을 제한한다. SIGKILL·호스트 소실 후 컨테이너 객체/파일 삭제나 증적 수집까지 보장하지 않는다. 잔존 시 원본 보존 후 정확 소유 범위만 운영자가 정리한다.
-- 원본: plan/승인 기록, command/rc/시간, 실제 image metadata·namespace/route·listener, POST 전 intent, 응답/DB 행/카운터, fixture·DB 로그, 동일 PID ROLLBACK, 최종6행, cleanup/result/SHA256SUMS. env 자격증명 파일은 manifest에서 제외하고 외부 편입하지 않는다. 회수 실패 시 해당 파일을 포함하는 폴더 전체 업로드도 금지한다.
+- 원본: plan/승인 기록, command/rc/시간, 실제 image metadata·namespace/route·listener, POST 전 intent, 응답/DB 행/카운터, fixture·DB 로그, 동일 PID ROLLBACK, 최종6행, cleanup/result/SHA256SUMS. 케이스 결과는 DB 필드/계약 판정 전에 저장한다. 원래 오류와 trigger 제거 오류는 `<case>-errors.json`에 각각 비밀값을 가려 보존하고 원래 오류를 유지하여 중단한다. env 자격증명 파일은 manifest에서 제외하고 외부 편입하지 않는다. 회수 실패 시 해당 파일을 포함하는 폴더 전체 업로드도 금지한다.
 - `LAB_RUNTIME_PASS`는 모든 케이스와 정리 성공·창 준수를 뜻한다. `production_runtime_claim=false`를 유지한다. 이후 증적 저장소 독립 리뷰·병합과 APP/E2E 최종 처분은 별도다.
 
 ## 검증 구분

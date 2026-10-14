@@ -20,7 +20,6 @@ import time
 
 from d03_fixture import CASES, validate_run
 
-ROOT = Path(__file__).resolve().parents[2]
 KST = dt.timezone(dt.timedelta(hours=9))
 HOST = 'cicd-runner01'
 SOURCE = 'affbc69beef9967f7977d09a6fec14f7fb6c0e94'
@@ -51,11 +50,20 @@ def save(path, value):
         stream.write(encode(value))
 
 
+def repository_root():
+    # Container helpers run from /d03 with only two staged files, not a checkout.
+    path = Path(__file__).resolve()
+    if len(path.parents) < 3 or path.parent.name != 'regression' or path.parent.parent.name != 'tools':
+        raise ValueError('HOST_REPOSITORY_REQUIRED')
+    return path.parents[2]
+
+
 def make_plan(run):
     validate_run(run)
+    root = repository_root()
     return {'schema': 'P1-D03-ISOLATED-1', 'run': run, 'host': HOST, 'uid': 1000,
             'source': SOURCE, 'images': IMAGES, 'deployed_manifests': MANIFESTS,
-            'files': {name: sha((ROOT/name).read_bytes()) for name in FILES},
+            'files': {name: sha((root/name).read_bytes()) for name in FILES},
             'cases': list(CASES), 'max_posts': 7, 'max_lifetime_seconds': 900,
             'production_runtime_claim': False}
 
@@ -191,6 +199,36 @@ FOR EACH ROW EXECUTE FUNCTION public.d03_insert_fail();
 """.replace('RUN',run)
 
 
+def canonical_image_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', value):
+        raise ValueError('INVALID_IMAGE_CONFIG_ID')
+    return 'sha256:' + value.removeprefix('sha256:')
+
+
+def image_record(role, image, obj):
+    raw = obj.get('Id', obj.get('ID', ''))
+    canonical = canonical_image_id(raw)
+    if role != 'db' and canonical != canonical_image_id(image):
+        raise ValueError('IMAGE_CONFIG_MISMATCH')
+    if role == 'db' and image not in obj.get('RepoDigests', []):
+        raise ValueError('DB_DIGEST_MISMATCH')
+    return {'id': raw, 'canonical_config_id': canonical,
+            'repo_digests': obj.get('RepoDigests', []), 'user': obj['Config']['User']}
+
+
+def runner_worker_active(proc=Path('/proc')):
+    for directory in proc.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            name = (directory/'comm').read_text().strip()
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # The process exited between enumeration and reading comm.
+        if name == 'Runner.Worker':
+            return True
+    return False
+
+
 class Lab:
     def __init__(self, plan, out, end):
         self.plan, self.out, self.end = plan, Path(out), end
@@ -304,31 +342,25 @@ class Lab:
 
     def execute(self):
         p=self.plan
+        root=repository_root()
         if self.cmd('info','--format','{{.Host.Security.Rootless}}').stdout.strip()!='true':
             raise ValueError('ROOTLESS_REQUIRED')
         if self.cmd('ps','-aq').stdout.strip():
             raise ValueError('EXCLUSIVE_EMPTY_CONTAINER_STORE_REQUIRED')
-        if any((d/'comm').read_text().strip()=='Runner.Worker' for d in Path('/proc').iterdir()
-               if d.name.isdigit() and (d/'comm').exists()):
+        if runner_worker_active():
             raise ValueError('RUNNER_WORKER_ACTIVE')
         for role, image in IMAGES.items():
             obj=json.loads(self.cmd('image','inspect',image,private=True).stdout)[0]
-            iid=obj.get('Id',obj.get('ID',''))
-            if role!='db' and iid!=image:
-                raise ValueError('IMAGE_CONFIG_MISMATCH')
-            if role=='db' and image not in obj.get('RepoDigests',[]):
-                raise ValueError('DB_DIGEST_MISMATCH')
-            save(self.out/(role+'-image.json'),{'id':iid,'repo_digests':obj.get('RepoDigests',[]),
-                                             'user':obj['Config']['User']})
+            save(self.out/(role+'-image.json'),image_record(role,image,obj))
         stage=self.out/'stage'; stage.mkdir(mode=0o755)
         code=stage/'code'; code.mkdir(mode=0o755)
         hooks=stage/'hooks'; hooks.mkdir(mode=0o755)
         for file in ('d03_lab.py','d03_fixture.py'):
-            source='tools/regression/'+file; raw=(ROOT/source).read_bytes()
+            source='tools/regression/'+file; raw=(root/source).read_bytes()
             if sha(raw)!=p['files'][source]: raise ValueError('STAGING_SOURCE_CHANGED')
             (code/file).write_bytes(raw); (code/file).chmod(0o644)
         for file in ('10-fds-schema.sh','fds-schema.sql'):
-            source='deploy/components/lab-db/'+file; raw=(ROOT/source).read_bytes()
+            source='deploy/components/lab-db/'+file; raw=(root/source).read_bytes()
             if sha(raw)!=p['files'][source]: raise ValueError('STAGING_SCHEMA_CHANGED')
             (hooks/file).write_bytes(raw); (hooks/file).chmod(0o644)
         (hooks/'20-d03-logging.sh').write_text("psql -X -v ON_ERROR_STOP=1 -d fds_lab <<'SQL' || exit 1\nALTER SYSTEM SET log_statement='all';\nALTER SYSTEM SET log_line_prefix='D03 [%p] ';\nALTER SYSTEM SET lc_messages='C';\nALTER SYSTEM SET logging_collector='off';\nALTER SYSTEM SET log_destination='stderr';\nSQL\n",encoding='utf-8')
@@ -375,32 +407,7 @@ class Lab:
         before_all=self.metrics(api)
         results=[]
         for case in CASES:
-            before=self.metrics(api)
-            installed=False
-            try:
-                if case=='DB':
-                    self.sql(db,trigger_sql(p['run'])); installed=True
-                # The claim is written before POST. No retry path exists, including uncertain responses.
-                save(self.out/(case+'-post-intent.json'),{'case':case,'payload':payload(p['run'],case),
-                    'at_utc':dt.datetime.now(dt.timezone.utc).isoformat()})
-                response=json.loads(self.inside(api,'_request',p['run'],case).stdout)
-                after=self.metrics(api)
-                account=payload(p['run'],case)['account_id']
-                rows=json.loads(self.sql(db,"SELECT coalesce(json_agg(t),'[]'::json) FROM (SELECT * FROM public.transactions WHERE account_id='"+account+"') t;"))
-                for row in rows:
-                    if (row['account_id']!=account or row['amount']!=10000 or row['transaction_type']!='deposit' or
-                            row['currency']!='KRW' or row['source_ip']!='198.51.100.10' or
-                            dt.datetime.fromisoformat(row['occurred_at']) != dt.datetime.fromisoformat(payload(p['run'],case)['occurred_at'])):
-                        raise ValueError('DB_REQUEST_FIELDS')
-                result={'case':case,'response':response,'before':before,'after':after,'rows':rows}
-                save(self.out/(case+'-result.json'),result)
-                check_case(case,response,before,after,rows)
-                results.append(result)
-            finally:
-                if installed:
-                    self.sql(db,trigger_sql(p['run'],remove=True))
-                    if self.sql(db,"SELECT count(*) FROM pg_trigger WHERE tgname='d03_insert_fail';")!='0':
-                        raise ValueError('TRIGGER_NOT_REMOVED')
+            results.append(self.run_case(case,api,db))
             if case=='DB':
                 logs=self.cmd('logs',db)
                 rollback_pid(logs.stdout+logs.stderr,p['run'])
@@ -431,6 +438,49 @@ class Lab:
         save(self.out/'verified-cases.json',{'cases':list(CASES),'posts':7,'stored':6,
              'response_db_transactions':all_rows,'rollback_pid':pid,'result':'LAB_RUNTIME_PASS',
              'production_runtime_claim':False})
+
+    def run_case(self,case,api,db):
+        run=self.plan['run']
+        installed=False
+        primary=cleanup_error=None
+        try:
+            before=self.metrics(api)
+            if case=='DB':
+                self.sql(db,trigger_sql(run)); installed=True
+            # Intent precedes POST; failures and uncertain responses are never retried.
+            save(self.out/(case+'-post-intent.json'),{'case':case,'payload':payload(run,case),
+                 'at_utc':dt.datetime.now(dt.timezone.utc).isoformat()})
+            response=json.loads(self.inside(api,'_request',run,case).stdout)
+            after=self.metrics(api)
+            account=payload(run,case)['account_id']
+            rows=json.loads(self.sql(db,"SELECT coalesce(json_agg(t),'[]'::json) FROM (SELECT * FROM public.transactions WHERE account_id='"+account+"') t;"))
+            result={'case':case,'response':response,'before':before,'after':after,'rows':rows}
+            save(self.out/(case+'-result.json'),result)
+            for row in rows:
+                if (row['account_id']!=account or row['amount']!=10000 or row['transaction_type']!='deposit' or
+                        row['currency']!='KRW' or row['source_ip']!='198.51.100.10' or
+                        dt.datetime.fromisoformat(row['occurred_at']) != dt.datetime.fromisoformat(payload(run,case)['occurred_at'])):
+                    raise ValueError('DB_REQUEST_FIELDS')
+            check_case(case,response,before,after,rows)
+        except BaseException as error:
+            primary=error
+        finally:
+            if installed:
+                try:
+                    self.sql(db,trigger_sql(run,remove=True))
+                    if self.sql(db,"SELECT count(*) FROM pg_trigger WHERE tgname='d03_insert_fail';")!='0':
+                        raise ValueError('TRIGGER_NOT_REMOVED')
+                except BaseException as error:
+                    cleanup_error=error
+        if primary is not None or cleanup_error is not None:
+            def describe(error):
+                return None if error is None else {'type':type(error).__name__,
+                    'message':str(error).replace(self.password,'<REDACTED>')}
+            save(self.out/(case+'-errors.json'),{'primary':describe(primary),'trigger_cleanup':describe(cleanup_error)})
+            if primary is not None:
+                raise primary from cleanup_error
+            raise cleanup_error
+        return result
 
     def metrics(self,api):
         result=json.loads(self.inside(api,'_probe','9091','/metrics').stdout)
