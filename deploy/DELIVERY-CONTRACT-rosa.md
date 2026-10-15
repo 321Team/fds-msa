@@ -135,10 +135,26 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 
 | 입력 | 출처 | 현재 |
 |---|---|---|
-| 레지스트리·current/previous digest | #42·#46 | 자리표시값(`registry-input-pending.invalid`). digest는 #15 승인값으로 둠 |
+| 레지스트리 | #42(D22) | 자리표시값(`registry-input-pending.invalid`) |
+| current digest | #43 채택(2026-10-15) | 앱별 고정: transaction-api `338b8a28…`, fds-engine `8b257adb…`(Push 38404449622). 아래 9절 |
+| previous digest | #43 채택(2026-10-15) | **없음(최초 P2 배포)**. 아래 9절 |
 | Route 승인 host | infra-rosa#4 Handoff 2 → `delivery/rosa.yaml` `app.route_host.approved` | `PENDING`(렌더는 자리표시값) |
 | `routes/custom-host` 처리 | #5 | (a) 채택, Role 반영·시험은 NOT_RUN |
 | 앱 NP 적용 주체, `default-deny-all` 제외 | #7 | 확정(문서), 적용 NOT_RUN |
 | 플랫폼 03의 IF-18 승인값 | #37·#47 | 대기 |
 | Secret 생성 경로 | #43/#12 | 대기 |
 | 라우터·openshift-dns 라벨, SCC 배정 UID 동작 | #38·#6 PG-03 | NOT VERIFIED |
+
+## 9. 앱별 current/previous 채택 (#43, 2026-10-15)
+
+| 앱 | current | previous |
+|---|---|---|
+| transaction-api | `sha256:338b8a2871507ce8b42deedc916b26e350577ee6efd18df23d7ff2dd4b17dff0` | 없음(최초 P2 배포) |
+| fds-engine | `sha256:8b257adb08b6d381f72b66d3386efea6112a8f072ecfafcbcd463bcd1c3be89d` | 없음(최초 P2 배포) |
+
+- **current 출처:** source `affbc69beef9967f7977d09a6fec14f7fb6c0e94`(fds-msa#27 승인) → TBS run 38395350748 → Push run 38404449622. 인계 원본은 evidence PR218 커밋 `7e6bb13d`의 `evidence/P1-CICD-01/push-run-38404449622-20261013/NEXT_DEPLOY_HANDOFF.json`입니다(push receipt `8be5cef6…`, scan 결과 `2326e501…`). `affbc69` 이후 `transaction-api/`·`fds-engine/`·`ci/apko/` 변경은 없습니다.
+- **previous를 두지 않는 이유:** P1 롤백 digest(`a7093136…`/`5e2a081c…`)는 Pod spec 관측값입니다. registry manifest·scan·승인 source lineage가 묶이지 않아, 현재 승인된 P2 lineage가 없습니다(D22 입력 계약). P1 복구 수용이나 해당 digest의 영구 사용 금지를 뜻하지 않습니다. evidence `P1-CICD-01`의 Push 실행 원본은 38404449622 1건뿐이라 다른 previous 후보도 없습니다.
+- **최초 배포 실패 시:** 최초 P2 배포에는 승인된 previous 렌더가 없습니다. 일부 적용 후 실패·timeout·응답 불명확·rollout 실패 시 자동 재적용/복구/삭제 없이 STOP하고, 해당 회차 증적과 실제 대상 상태를 대조해 사람이 정리 범위를 판단합니다. P1 workload·트래픽·DB 및 운영 설정은 이 절차의 변경 대상이 아닙니다. 이는 P1 실제 가용성 검증을 대신하지 않습니다.
+- **이후:** 최초 P2 배포의 검증·인수가 완료되면 승인 reference와 함께 앱별 digest, source/render/contract hash 및 필요한 설정·플랫폼 receipt를 묶어 다음 업데이트의 previous 후보로 기록합니다. 실제 restore는 그 이전 승인본의 유효성·가용성을 확인하고 별도 action/작업창 승인으로 수행합니다.
+- **레지스트리:** #42(D22)로 이름만 바꿉니다. 복사 뒤 digest가 같아야 하며, 다르면 #46은 첫 쓰기 전에 STOP합니다.
+- **미검증:** ROSA SCC가 배정하는 임의 UID로 실행되는지는 NOT VERIFIED입니다(8절 SCC 행). 이미지는 `USER 10001:999`이고 `readOnlyRootFilesystem: true`·`PYTHONDONTWRITEBYTECODE=1`입니다. 실행 시점의 scan 최신성은 #46이 판단합니다.

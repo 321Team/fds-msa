@@ -17,13 +17,14 @@ labels:
       team: 321team
     includeSelectors: false
 images:
-  # digest는 #15 승인 기준(a7093136/5e2a081c). 전달 회차의 current/previous digest는 #42·#46 source chain으로 다시 고정한다.
+  # P2 current digest(#43 채택, 2026-10-15): source affbc69(fds-msa#27) → TBS 38395350748 → Push 38404449622의 앱별 digest.
+  # previous는 없음(최초 P2 배포). 레지스트리 이름(#42 D22)만 바뀌고 digest는 바뀌지 않아야 한다. 바뀌면 #46은 첫 쓰기 전 STOP.
   - name: transaction-api
     newName: registry-input-pending.invalid/fds/transaction-api
-    digest: sha256:a7093136d12640da00570c18ed278eacbb8e9ba3637c7d509571346eac45cc33
+    digest: sha256:338b8a2871507ce8b42deedc916b26e350577ee6efd18df23d7ff2dd4b17dff0
   - name: fds-engine
     newName: registry-input-pending.invalid/fds/fds-engine
-    digest: sha256:5e2a081cd51a957c3fad038b3eab07884c446ea3c2a814a905e3f41c24f67369
+    digest: sha256:8b257adb08b6d381f72b66d3386efea6112a8f072ecfafcbcd463bcd1c3be89d
 patches:
   # DB(db01) egress는 플랫폼 NetworkPolicy allow-egress-onprem-approved(infra-rosa#7 03)가 이 Pod 라벨로 연다.
   # fds-engine에는 붙이지 않는다(DB 접속정보 없음).
