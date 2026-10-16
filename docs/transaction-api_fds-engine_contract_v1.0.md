@@ -135,27 +135,30 @@ D03의 기존 3실패 경로 제품 Defect0 처분은 그 검증 범위에 유�
 
 ---
 
-## 5. 장애/타임아웃 처리 — **결정 필요 (OPEN ISSUE)**
+## 5. 장애/타임아웃 처리 — 기존 Phase 1 정책 연결
 
-fds-engine이 타임아웃되거나 5xx를 반환할 경우 transaction-api의 동작을 다음 중 하나로 결정해야 함:
+[CR-P1-APP-01-01 (#119)](https://github.com/321Team/fds-project-baseline/issues/119)의 DB/FDS 장애 분리와 고정 APP source `affbc69beef9967f7977d09a6fec14f7fb6c0e94`를 따른다. 과거 Option A/B 선택 문구를 새 승인 조건으로 사용하지 않는다.
 
-- **Option A (fail-open, 권장)**: 거래는 정상 저장하되 `fds_detected=null`, `fds_evaluation_skipped=true`로 기록하고 `fds_evaluation_error_total` 메트릭 증가. 거래 자체를 막지 않음 — Phase 1 목적이 "탐지"이지 "차단"이 아니므로 가용성 우선.
-- **Option B (fail-closed)**: fds-engine 미응답 시 거래 자체를 거부(503). 금융권 실무에 가깝지만 Phase 1 P0 목표(가용성 중심 E2E)와 상충 가능.
-
-> 별도 결정 없으면 **Option A로 기본 채택**하고 P1-MSA-01 티켓에 기록.
+- fds-engine 호출의 connect timeout은 1초, read timeout은 2초다. `httpx.TimeoutException` 또는 `httpx.HTTPError`이면 `fds_evaluation_error_total`을 증가시키고 fail-open 처리한다. transaction-api는 `fds_detected=null`, `fds_evaluation_skipped=true`로 DB 저장을 시도하며, 저장 성공 시 HTTP201을 반환한다.
+- DB 저장 단계의 예외는 rollback·HTTP500·`transaction_save_failure_total` 증가로 처리한다. transaction-api `/readyz`는 DB 연결을 확인하므로 DB 연결 실패 시 HTTP503이며, fds-engine 호출 실패 자체를 readiness 실패로 취급하지 않는다.
+- [기존 정상 회귀 기준](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/docs/p1-final-regression-readiness-20261010.md)에서 평가 생략은 정상 성공으로 계산하지 않는다. 위 fail-open은 엔진 실패 경로의 기존 정책이며 모든 장애에서 저장 성공을 보장한다는 뜻이 아니다.
+- 이 정정은 기존 정책의 문서 연결이다. §2.1–2.3의 채택 규약·미구현 상태·제품 잔여를 변경하거나 전체 APP/E2E 인수를 판정하지 않는다.
 
 ---
 
-## 6. Health Check (참고 — Probe 작업과 연계)
+## 6. Health Check — 고정 Runtime source 기준
 
-fds-engine은 DB 등 외부 의존성이 없으므로 `/health` 단일 엔드포인트로 liveness/readiness 겸용.
-transaction-api는 `/health`(liveness, 무의존성) / `/ready`(readiness+startupProbe, DB 커넥션 체크)로 분리.
-(FDS_SECURITY_BASELINE_v2 / Probe 필수화 작업 참조)
+기준은 APP source `affbc69beef9967f7977d09a6fec14f7fb6c0e94`의 두 `app/main.py` 및 `deploy/base/{transaction-api,fds-engine}.yaml`이다. 저장소 최신 HEAD와 실제 배포 버전을 구분한다.
+
+- transaction-api: `/livez`(liveness, 업무 포트8000), `/readyz`(readiness, DB 연결 확인, 실패 시503).
+- fds-engine: `/livez`와 `/readyz`(업무 포트8001), DB 의존성 없음.
+- 위 deploy/base 두 파일에는 liveness/readiness가 정의되며 startupProbe는 없다. 실제 배포의 startupProbe 여부·값은 해당 Runtime manifest와 Probe223 원본에 따라 판정한다.
+- metrics는 API9091/engine9090으로 업무 Probe 포트와 구분한다. 실제 HTTP Probe 적용/오프라인 판독 범위는 [HTTP Probe Runbook](https://github.com/321Team/infra-kubernetes/blob/e60e022333a51a9a1690649ef170c0bda92ad9b9/ops/p1-http-probe/README.md)과 원본 증적223을 따른다.
 
 ---
 
 ## 7. Open Issues
 
-- [ ] §5 장애 처리 정책 A/B 확정
+- [x] §5 기존 Phase 1 장애 처리 정책 연결 — CR-P1-APP-01-01. 이번 문서 정정의 Review·반영은 별도.
 - [ ] Rule threshold 실제 값 (R01 횟수, R02 금액, R04 시간대+금액, R07 건수/합산액) — 구현 시 확정
 - [ ] `context` 계산 쿼리가 transaction-api → db01 부하에 미치는 영향 측정 (P1-MON-01 이후 확인)
