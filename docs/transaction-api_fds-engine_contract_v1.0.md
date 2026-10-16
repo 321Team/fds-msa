@@ -63,20 +63,20 @@
 
 > transaction_type이 `deposit`인 경우 context는 0으로 채워서 보내거나 생략 가능 (fds-engine 쪽에서 default 0 처리).
 
-### 2.1. 신규 클라이언트 입력 규약 — 별도 문서 PR 반영안
+### 2.1. 신규 클라이언트 입력 규약
 
-근거는 APP Lead 이재환의 [09:49 회신6205473163](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6205473163)과 [11:39 보완 회신6206804605](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6206804605)이다(2026-10-16 KST). 기존 필드 표는 보존하고 신규 입력 규약·서버 구현·잔여 항목을 아래에서 구분한다. 이 절은 별도 문서 변경 PR의 검토 후보이며 게시·리뷰·병합 완료를 뜻하지 않는다.
+근거는 APP Lead 이재환의 [09:49 회신6205473163](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6205473163)과 [11:39 보완 회신6206804605](https://github.com/321Team/fds-project-baseline/issues/20#issuecomment-6206804605)이다(2026-10-16 KST). 기존 필드 표는 보존하고 신규 입력 규약·서버 구현·잔여 항목을 아래에서 구분한다. 이 절은 위 APP Lead 채택 결정에 따른 신규 입력 규약을 기록한다. 문서 변경의 리뷰·병합 이력은 [fds-msa#38](https://github.com/321Team/fds-msa/pull/38)에서 확인하며, 서버 검증 구현을 뜻하지 않는다.
 
 | 구분 | 규약 및 반영 상태 |
 |---|---|
 | I01 시간 입력 | 신규 클라이언트·시험 도구가 `occurred_at` 값을 제공하면 `Z` 또는 명시적 offset을 포함한다는 규약을 APP Lead가 채택했다. `2026-10-14T02:30:00+09:00`과 `2026-10-13T17:30:00Z`는 같은 시각이다. UTC Z만으로 제한하지 않는다 |
-| 금액 입력 | APP Lead의 보완 회신에 따라 같은 규약 문서에 `amount > 0`만 허용하도록 반영하는 안이다. 0과 음수는 이 신규 클라이언트 규약안의 허용 금액이 아니다. API/DB에 범위 검증이 구현됐다는 뜻은 아니다 |
+| 금액 입력 | 신규 클라이언트·시험 도구는 `amount > 0`만 보낸다(APP Lead 채택). 0과 음수는 이 규약의 허용 금액이 아니다. API/DB에 범위 검증이 구현됐다는 뜻은 아니다 |
 | 기존 동작·필드와의 구분 | 위 내부 계약 표의 `occurred_at` 필수 여부·UTC 표기·amount 타입/설명은 그대로 둔다. 외부 API의 시각 생략/null 서버 시각 경로와 내부 `/evaluate` 필수 필드를 구분한다 |
-| 적용 경계 | 기존 저장 행을 소급 보정/삭제하지 않는다. 문서 PR 리뷰에서 시간 규약과 금액 규약안, I01 Minor와 별도 Major 후보의 분리를 확인한다 |
+| 적용 경계 | 기존 저장 행을 소급 보정/삭제하지 않는다. 시간 규약과 금액 규약을 구분하고, I01 Minor와 별도 Major 후보의 분리를 유지한다 |
 
-### 2.2. I01 — 시간 입력 Minor·문서 반영 대기·잔여 위험
+### 2.2. I01 — 시간 입력 Minor·규약 문서 반영·잔여 위험
 
-APP Lead의 **I01 Minor, P1 코드 변경 없음** 판단을 유지한다. 시간 규약 채택은 서버의 naive 입력 거부나 미래 이력 상한을 구현한 것이 아니며, 문서 반영 전 I01을 수정·종결로 표시하지 않는다.
+APP Lead의 **I01 Minor, P1 코드 변경 없음** 판단을 유지한다. 규약 문서 반영은 I01의 수정·종결이 아니다. 서버의 naive 입력 거부나 미래 이력 상한은 구현되지 않았으며, 잔여 위험을 유지한다.
 
 - **소스 사실:** Phase1 앱 source `affbc69beef9967f7977d09a6fec14f7fb6c0e94`의 [API](https://github.com/321Team/fds-msa/blob/affbc69beef9967f7977d09a6fec14f7fb6c0e94/transaction-api/app/main.py#L55)는 시각 문자열을 파싱하지만 naive 여부를 거부하지 않는다. 생략/null/빈 문자열은 aware UTC 서버 now로 처리한다. 빈 문자열 처리는 구현 설명이며 신규 규약의 권장 입력으로 추가하지 않는다. `received_at`은 별도의 서버 수신시각이다.
 - **소스 사실:** [R04](https://github.com/321Team/fds-msa/blob/affbc69beef9967f7977d09a6fec14f7fb6c0e94/fds-engine/app/rules.py#L43)는 naive를 UTC로 간주한 뒤 KST로 판정한다. 기존 KST 01:00 이상 05:00 미만·금액 기준은 유지한다. 신규 규약을 기존 입력에 소급 적용하지 않는다.
@@ -87,12 +87,12 @@ APP Lead의 **I01 Minor, P1 코드 변경 없음** 판단을 유지한다. 시�
 
 임시 설명명은 **“음수 금액 검증 부재”**다. APP Lead가 신규 Defect 후보·Severity **Major**로 분리했다. I01의 Minor를 Major로 변경하거나 신규 공식 Defect ID·담당·기한을 부여한 것이 아니다.
 
-- **소스 사실:** [API `amount: float`](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/transaction-api/app/main.py#L23), [DB Numeric 모델](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/transaction-api/app/db.py#L25), [저장소 migration SQL](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/database/migrations/001_create_transactions.sql)에는 금액 양수 검증이 없다. 이는 정적 사실이며 실제 운영 DB 저장 성공을 실측했다는 뜻이 아니다. 문서 main `c9c42cc1cc0c135320b81480984941f2a118f592`를 새 배포 승인으로 사용하지 않는다.
+- **소스 사실:** [API `amount: float`](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/transaction-api/app/main.py#L25), [DB Numeric 모델](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/transaction-api/app/db.py#L25), [저장소 migration SQL](https://github.com/321Team/fds-msa/blob/c9c42cc1cc0c135320b81480984941f2a118f592/database/migrations/001_create_transactions.sql)에는 금액 양수 검증이 없다. 이는 정적 사실이며 실제 운영 DB 저장 성공을 실측했다는 뜻이 아니다. 문서 main `c9c42cc1cc0c135320b81480984941f2a118f592`를 새 배포 승인으로 사용하지 않는다.
 - **정적 추론 예시:** 후속 transfer 요청을 평가하기 **직전**, 같은 계좌의 최근 1시간 이력에 1,000,000원 이체 3행이 이미 저장돼 있으면 count3·sum3,000,000으로 R07 조건을 만족한다. 같은 시간 범위의 -1,500,000원 이체 1행도 이미 저장돼 있다면 count4·sum1,500,000이 되어 합계 조건을 만족하지 않는다. API가 현재 요청을 INSERT하기 전에 이력을 계산하므로 이 예시는 현재 요청을 포함한 전송 건수와 다르다. 미래 시각이나 naive 입력은 필요 없다. 실제 음수 행 저장·후속 탐지 누락 재현은 **NOT_RUN**이다.
 - **Rule 범위:** 음수 거래 자체는 R02/R04의 양수 금액 하한을 충족하지 않는다. R01은 count 기반이라 음수 금액의 합계 감소 경로는 없지만, 음수 withdrawal 행도 조회 건수에 포함될 수 있으므로 모든 R01 영향이 없다고 확대하지 않는다.
 - **처분:** APP Lead는 Critical0·Regression/Defect 승인을 유지하고 이 Major 후보를 이름 붙인 잔여로 추가했다. P1 코드 변경은 선택하지 않았다. `Field(..., gt=0)`/422 거절, 0·음수 시험, DB `CHECK (amount > 0)`은 후속 변경안 선택지이며 구현·시험·일정 승인이 아니다.
 
-D03의 기존 3실패 경로 제품 Defect0 처분은 그 검증 범위에 유지한다. 위 신규 Major 후보까지 포함한 현재 제품 결함0으로 확대하지 않는다. D02 HTTPS SEC 결정, I01 문서 반영, 음수 금액 Major 후보의 규약 문서·잔여 기록이 남으며, 전체 Phase1 Close는 별도 통합 판단이다. 기존 성공 회귀·D04·CICD AC03/AC10은 재사용한다.
+D03의 기존 3실패 경로 제품 Defect0 처분은 그 검증 범위에 유지한다. 위 신규 Major 후보까지 포함한 현재 제품 결함0으로 확대하지 않는다. D02 HTTPS SEC 결정과 전체 Phase1 Close는 별도 판단이다. I01 및 음수 금액 Major 후보의 규약 문서 반영이 서버 검증 구현이나 잔여 위험의 해소를 뜻하지 않는다. 기존 성공 회귀·D04·CICD AC03/AC10은 재사용한다.
 
 ---
 
