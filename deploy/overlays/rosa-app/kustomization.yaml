@@ -2,7 +2,8 @@
 # Deployment·Service·Route만 남긴다. ServiceAccount·NetworkPolicy·Secret·RBAC는 플랫폼 사전 자원이다
 # (overlays/rosa-prereq와 infra-rosa#5·#7, Secret은 #43/#12 승인 경로).
 # 계약·허용목록: deploy/delivery/rosa.yaml, 설명: deploy/DELIVERY-CONTRACT-rosa.md.
-# 레지스트리(#42)·Route host(#38)가 자리표시값(.invalid)인 동안 tools/check_delivery_render.py가 전달을 거부한다.
+# 레지스트리(#42)가 자리표시값(.invalid)인 동안 tools/check_delivery_render.py가 전달을 거부한다.
+# Route host는 delivery/rosa.yaml route_host.approved와 같은 값으로 아래 patch가 넣는다(2026-10-18 기록).
 # 이 파일만으로 배포 GO가 아니다. 실제 적용은 #46 회차와 실행 직전 receipt 대조를 따른다.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -35,6 +36,21 @@ patches:
       - op: add
         path: /spec/template/metadata/labels/onprem-egress
         value: "true"
+  # 두 Route의 승인 host(delivery/rosa.yaml route_host.approved). components/openshift의 자리표시값은 그대로 둔다.
+  - target:
+      kind: Route
+      name: transaction-api-api
+    patch: |-
+      - op: replace
+        path: /spec/host
+        value: fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com
+  - target:
+      kind: Route
+      name: transaction-api-readyz
+    patch: |-
+      - op: replace
+        path: /spec/host
+        value: fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com
   # 아래는 배포 SA가 쓰지 않는 플랫폼 사전 자원이다(rosa-prereq·#7). 앱 렌더에서 뺀다.
   - patch: |-
       $patch: delete

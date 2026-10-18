@@ -66,7 +66,7 @@ sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf diff -k deploy/overlays/p1-
 |---|---|---|
 | Route | `transaction-api-api`(path `/api`), `transaction-api-readyz`(path `/readyz`). 같은 host, Service `transaction-api` 포트 `http`(→ 8000) | 경로 없는 catch-all Route를 만들지 않습니다. 8000의 `/metrics`·`/livez`·`/`는 외부로 나가지 않습니다 |
 | TLS | `edge`, HTTP는 HTTPS로 Redirect | 앱이 평문 8000이라 경로 라우팅이 되는 방식은 edge뿐입니다(passthrough 불가, reencrypt는 Pod TLS 필요). 인증서·최종 방식은 #38 handoff로 확인합니다 |
-| host | 자리표시값 `fds-api.route-host-input-pending.invalid` | 실제 overlay가 클러스터 apps 도메인 아래 값으로 바꿉니다 |
+| host | 자리표시값 `fds-api.route-host-input-pending.invalid` | 실제 overlay가 클러스터 apps 도메인 아래 값으로 바꿉니다. ROSA는 `rosa-app`이 `delivery/rosa.yaml` 승인 host로 바꿉니다(2026-10-18) |
 | 라우터 진입 | transaction-api 8000 ← namespace 라벨 `policy-group.network.openshift.io/ingress: ""` | 클러스터에서 라벨 확인 필요 |
 | DNS | 두 앱 → `openshift-dns`의 `dns.operator.openshift.io/daemonset-dns: default` 5353·53 UDP/TCP | 서비스 53 → Pod 5353 |
 | 넣지 않는 것 | 고정 UID/GID, pull secret, 모니터링 수집 경로 | UID는 restricted-v2 SCC 배정, 레지스트리는 #42, 모니터링은 별도 결정 |
