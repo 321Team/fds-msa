@@ -138,7 +138,7 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 | 레지스트리 | #42(D22) | 자리표시값(`registry-input-pending.invalid`) |
 | current digest | #43 채택(2026-10-15) | 앱별 고정: transaction-api `338b8a28…`, fds-engine `8b257adb…`(Push 38404449622). 아래 9절 |
 | previous digest | #43 채택(2026-10-15) | **없음(최초 P2 배포)**. 아래 9절 |
-| Route 승인 host | infra-rosa#4 Handoff 2 → `delivery/rosa.yaml` `app.route_host.approved` | `PENDING`(렌더는 자리표시값) |
+| Route 승인 host | infra-rosa#4 Handoff 2 → `delivery/rosa.yaml` `app.route_host.approved` | **`fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com`** (2026-10-18 기록). Handoff 2 = [baseline#38 6249632930](https://github.com/321Team/fds-project-baseline/issues/38#issuecomment-6249632930) 2행 Ingress domain, [권욱 수신 검토 6250017909](https://github.com/321Team/fds-project-baseline/issues/38#issuecomment-6250017909). `rosa-app` overlay가 두 Route에 넣고, `components/openshift`는 자리표시값 유지. default 인증서가 이 host를 덮는지는 #38 TLS handoff 전 NOT VERIFIED |
 | `routes/custom-host` 처리 | #5 | (a) 채택, Role 반영·시험은 NOT_RUN |
 | 앱 NP 적용 주체, `default-deny-all` 제외 | #7 | 확정(문서), 적용 NOT_RUN |
 | 플랫폼 03의 IF-18 승인값 | #37·#47 | 대기 |

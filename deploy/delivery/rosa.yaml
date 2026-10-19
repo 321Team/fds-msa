@@ -22,9 +22,11 @@ app:
     transaction-api: "true"
   # 두 Route가 써야 하는 승인 host 1개(infra-rosa#5 v3.2 §1 조건 2). ingress domain 확정 뒤
   # infra-rosa#4 Handoff 2 기준 값을 PR로 기록한다. PENDING이면 전달 검사는 FAIL(첫 쓰기 전 STOP).
+  # 2026-10-18 기록: Handoff 2 = baseline#38 6249632930 2행(Ingress apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com,
+  # external), 권욱 수신 검토 6250017909. host = "fds-api." + 그 domain. 인증서 범위는 #38 TLS handoff(NOT VERIFIED).
   route_host:
-    approved: PENDING
-    source: "infra-rosa#4 Handoff 2 (API/Ingress endpoint)"
+    approved: fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com
+    source: "infra-rosa#4 Handoff 2 (API/Ingress endpoint) — baseline#38 6249632930"
 prereq:
   overlay: deploy/overlays/rosa-prereq
   applied_by: "#5/#7 bootstrap executor (named admin)"

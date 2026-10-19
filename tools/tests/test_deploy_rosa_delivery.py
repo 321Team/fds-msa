@@ -23,7 +23,7 @@ APP = DEPLOY / "overlays" / "rosa-app"
 PREREQ = DEPLOY / "overlays" / "rosa-prereq"
 CONTRACT = yaml.safe_load((DEPLOY / "delivery" / "rosa.yaml").read_text(encoding="utf-8"))
 APPROVED_HOST = "fds-api.apps.example.com"
-# 전달 회차를 흉내 낸 계약: 승인 host가 기록된 상태(저장소 계약은 아직 PENDING).
+# 전달 회차를 흉내 낸 계약: 시험용 승인 host(저장소 계약의 실제 승인 host와 별개).
 DELIVERY = copy.deepcopy(CONTRACT)
 DELIVERY["app"]["route_host"]["approved"] = APPROVED_HOST
 
@@ -101,7 +101,8 @@ class ContractShapeTests(unittest.TestCase):
         self.assertNotIn("images", prereq)
 
     def test_app_overlay_labels_only_transaction_api_for_onprem_egress(self):
-        targets = [p["target"]["name"] for p in load(APP / "kustomization.yaml")["patches"] if "target" in p]
+        targets = [p["target"]["name"] for p in load(APP / "kustomization.yaml")["patches"]
+                   if p.get("target", {}).get("kind") == "Deployment"]
         self.assertEqual(targets, ["transaction-api"])
         self.assertEqual(CONTRACT["app"]["onprem_egress_label"], {"transaction-api": "true"})
 
@@ -109,6 +110,20 @@ class ContractShapeTests(unittest.TestCase):
         approved = CONTRACT["app"]["route_host"]["approved"]
         self.assertTrue(approved == cdr.PENDING or cdr.dns_host(approved), approved)
         self.assertIn("Handoff 2", CONTRACT["app"]["route_host"]["source"])
+
+    def test_app_overlay_sets_both_routes_to_contract_host(self):
+        """2026-10-18: 승인 host 기록 뒤 rosa-app이 두 Route에 같은 값을 넣는다. 자리표시값은 component에만 남는다."""
+        approved = CONTRACT["app"]["route_host"]["approved"]
+        self.assertTrue(cdr.dns_host(approved), approved)
+        patched = {}
+        for p in load(APP / "kustomization.yaml")["patches"]:
+            if p.get("target", {}).get("kind") == "Route":
+                ops = yaml.safe_load(p["patch"])
+                self.assertEqual([(o["op"], o["path"]) for o in ops], [("replace", "/spec/host")])
+                patched[p["target"]["name"]] = ops[0]["value"]
+        self.assertEqual(patched, {"transaction-api-api": approved, "transaction-api-readyz": approved})
+        for d in load_all(OCP / "route.yaml"):
+            self.assertEqual(d["spec"]["host"], "fds-api.route-host-input-pending.invalid")
 
     def test_contract_matches_base_service_accounts_and_secret_refs(self):
         for d in source_objects():
@@ -272,8 +287,10 @@ class CheckerTests(unittest.TestCase):
             if d["kind"] == "Route":
                 d["spec"]["host"] = "fds-api.route-host-input-pending.invalid"
         self.assertTrue(any("placeholder" in e for e in self.run_check(docs)["errors"]))
-        # CI 렌더 확인은 저장소 계약(승인 host PENDING)으로 돈다.
-        self.assertEqual(self.run_check(docs, allow=True, contract=CONTRACT)["result"], "PASS")
+        # 승인 host가 PENDING인 계약에서는 CI 렌더 확인(--allow-placeholders)이 자리표시 host를 허용한다.
+        pending = copy.deepcopy(CONTRACT)
+        pending["app"]["route_host"]["approved"] = cdr.PENDING
+        self.assertEqual(self.run_check(docs, allow=True, contract=pending)["result"], "PASS")
         self.assertEqual(self.run_check(docs, allow=True)["result"], "FAIL", "승인 host가 기록되면 자리표시 host는 불일치")
 
     def test_cli_exit_codes_and_hash_binding(self):
@@ -293,7 +310,7 @@ class CheckerTests(unittest.TestCase):
             self.assertEqual(out["contract_sha256"], hashlib.sha256(contract.read_bytes()).hexdigest())
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cdr.main(["--mode", "prereq", "--contract", str(contract), str(good)]), 1)
-                self.assertEqual(cdr.main(["--mode", "app", str(good)]), 1, "저장소 계약은 승인 host PENDING")
+                self.assertEqual(cdr.main(["--mode", "app", str(good)]), 1, "저장소 계약의 승인 host와 시험 host가 다름")
                 self.assertEqual(cdr.main(["--mode", "app", str(Path(tmp, "missing.yaml"))]), 2)
 
     def test_cli_structural_error_is_rc2_not_traceback(self):
