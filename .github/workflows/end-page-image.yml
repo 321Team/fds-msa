@@ -93,7 +93,7 @@ jobs:
           check "실행 UID" "$RUN_UID" "$(docker exec ep id -u)"
           check "healthz" "200" "$(code "$B/end/healthz")"
           check "/end/ 200" "200" "$(code "$B/end/")"
-          check "/end/ 제목" "1" "$(curl -s "$B/end/" | grep -c '이 페이지는 지금 ROSA에서 돌고 있습니다')"
+          check "/end/ 제목" "1" "$(curl -s "$B/end/" | grep -c '<title>FDS Hybrid · 321Team</title>')"
           check "app.js 200" "200" "$(code "$B/end/app.js")"
           check "app.css 200" "200" "$(code "$B/end/app.css")"
           check "app.js type" "application/javascript" "$(header "$B/end/app.js" Content-Type)"
