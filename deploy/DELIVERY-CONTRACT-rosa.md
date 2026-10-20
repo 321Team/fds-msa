@@ -170,7 +170,7 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 
 - **소스:** `end-page/`(HTML·CSS·JS·nginx 설정·Dockerfile), `deploy/components/end-page/`. base와 `p1-onprem`·`openshift-render-check`에는 넣지 않습니다(시험으로 확인).
 - **동작:** 브라우저가 같은 host의 `/readyz`와 `POST /api/v1/transactions`를 부릅니다. end-page Pod 자체는 다른 서비스를 호출하지 않습니다.
-- **권한·경로:** DB·Secret·`onprem-egress` 라벨이 없습니다. NP는 라우터 → 8080만 열고 나가는 연결은 없습니다(DNS 포함).
+- **권한·경로:** DB·Secret·`onprem-egress` 라벨이 없습니다. NP는 라우터 → 8080만 추가로 엽니다. 이 앱 정책은 egress를 더하지 않습니다. 플랫폼 공통 DNS 허용(infra-rosa `platform/netpol/01-allow-dns.yaml`, `podSelector: {}`)은 별도로 합산됩니다. DB 접근은 없습니다.
 - **노출 정보:** Downward API로 Pod 이름(`/end/meta/pod`)과 거래 버튼 표시 여부(`/end/meta/tx-demo`, Pod annotation `fds.321team/tx-demo`, 기본 `off`)만 내보냅니다. 화면의 응답 Pod 표시는 2026-10-15 제거했고 `/end/meta/pod` 파일은 남아 있습니다(필요 없으면 리뷰 때 Downward API 항목 삭제). ConfigMap은 쓰지 않습니다.
 - **거래 버튼:** 금감원 공개 사례 대응표의 시험 거래 값을 따릅니다. 정상(입금 1만), R02 이체 350만(FSS-01), R01 출금 90만×4(FSS-03), R07 이체 70만×4(FSS-04), R04 이체 150만·occurred_at 02:30 KST(팀 규칙, 공개 자료 직접 근거 없음). 버튼 글자에는 규칙 번호를 쓰지 않고 금감원 사례 번호만 작게 표시합니다(2026-10-15). 사내 db01 조회는 결과 칸 첫 줄의 시험 계정(`SIM_end_…`)으로 합니다(거래 ID 확인 상자는 2026-10-15 제거).
   - 켜는 시간: **시연 영상 녹화 중에만** `on`, 평소 `off`(2026-10-13 결정). 바꾸면 rollout이 일어납니다.

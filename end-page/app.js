@@ -292,19 +292,19 @@
   var CHECKS = {
     X01: { want: "200이 아님", stopAt: 1, where: "ROSA 라우터에서 차단", why: "열려 있지 않은 경로", name: "내부 지표 엿보기", run: function () {
       return fetch("/metrics", { cache: "no-store" }).then(function (r) {
-        return { blocked: r.status !== 200, text: "GET /metrics → " + r.status };
+        return { blocked: r.status !== 200 && r.status < 500, unknown: r.status >= 500, text: "GET /metrics → " + r.status };
       });
     } },
     N06: { want: "422", stopAt: 2, where: "transaction-api 입력 검증에서 차단", why: "없는 거래 종류", name: "없는 거래 종류", run: function () {
       return postOnce({ account_id: "SIM_end_" + runId() + "_N06", amount: 10000, currency: "KRW",
         transaction_type: "refund", source_ip: "198.51.100.10" }).then(function (res) {
-        return { blocked: res.status === 422, text: "POST transaction_type=refund → " + res.status };
+        return { blocked: res.status === 422, unknown: res.status === 0 || res.status >= 500, text: "POST transaction_type=refund → " + res.status };
       });
     } },
     N07: { want: "422", stopAt: 2, where: "transaction-api 입력 검증에서 차단", why: "필수 값(금액) 누락", name: "금액 빠진 거래", run: function () {
       return postOnce({ account_id: "SIM_end_" + runId() + "_N07", currency: "KRW",
         transaction_type: "deposit", source_ip: "198.51.100.10" }).then(function (res) {
-        return { blocked: res.status === 422, text: "POST amount 없음 → " + res.status };
+        return { blocked: res.status === 422, unknown: res.status === 0 || res.status >= 500, text: "POST amount 없음 → " + res.status };
       });
     } }
   };
@@ -326,7 +326,7 @@
     box.hidden = false;
     box.className = "verdict" + (r.blocked ? "" : " bad");
     $("sec-title").textContent =
-      r.blocked ? c.where + " — " + c.why : "예상과 다름 — 요청이 통과했습니다 (기대 " + c.want + ")";
+      r.unknown ? "확인 불가 — " + c.name : r.blocked ? c.where + " — " + c.why : "기대한 차단 응답이 아님 (기대 " + c.want + ")";
     $("sec-detail").textContent = r.text;
   }
 
@@ -351,17 +351,24 @@
     return c.run()
       .then(function (r) {
         var code = (r.text.match(/→ (\d+)/) || [])[1] || "";
+        if (r.unknown) {
+          showVerdict(c, r);
+          setTile(tile, "bad", "확인 불가" + (code ? " · " + code : ""));
+          delete stats.blocked[id]; renderStats();
+          return;
+        }
         return sleep(paintLane(c.stopAt, r.blocked)).then(function () {
           showVerdict(c, r);
-          setTile(tile, r.blocked ? "lit" : "bad", (r.blocked ? "차단됨" : "통과됨") + (code ? " · " + code : ""));
+          setTile(tile, r.blocked ? "lit" : "bad", (r.blocked ? "차단됨" : "기대와 다름") + (code ? " · " + code : ""));
           if (r.blocked) { showBanner("보안 차단 · " + c.where.replace(/에서 차단$/, "") + " — " + c.why, "block"); }
           if (r.blocked) { stats.blocked[id] = true; } else { delete stats.blocked[id]; }
           bump($("st-block"));
           renderStats();
         });
       }, function () {
-        showVerdict(c, { blocked: false, text: "응답 없음 — 확인 불가" });
+        showVerdict(c, { blocked: false, unknown: true, text: "응답 없음 — 확인 불가" });
         setTile(tile, "bad", "확인 불가");
+        delete stats.blocked[id]; renderStats();
       })
       .then(function () { button.classList.remove("active"); });
   }

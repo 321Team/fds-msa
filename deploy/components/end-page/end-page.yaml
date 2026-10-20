@@ -112,7 +112,8 @@ spec:
       targetPort: 8080
       protocol: TCP
 ---
-# 라우터 → 8080만 받고, 나가는 연결은 없다(egress 규칙 없음 = 전부 차단, DNS도 쓰지 않음).
+# 라우터 → 8080만 추가 허용한다. 이 앱 정책은 egress를 추가하지 않는다.
+# 플랫폼 공통 allow-egress-dns는 별도로 합산되며, 이 Pod에 DB용 onprem-egress 라벨은 없다.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

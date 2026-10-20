@@ -145,7 +145,7 @@ class ContractShapeTests(unittest.TestCase):
                          ["fds.321team/tx-demo"], "off", "거래 버튼은 기본 꺼짐")
         pol = docs[("NetworkPolicy", "end-page-allow")]["spec"]
         self.assertEqual(pol["policyTypes"], ["Ingress", "Egress"])
-        self.assertNotIn("egress", pol, "나가는 연결 없음(DNS 포함)")
+        self.assertNotIn("egress", pol, "이 앱 정책은 egress를 추가하지 않음(플랫폼 공통 DNS 허용은 별도)")
         self.assertEqual([p["port"] for r in pol["ingress"] for p in r["ports"]], [8080])
         route = docs[("Route", "end-page")]["spec"]
         self.assertEqual((route["path"], route["tls"]), ("/end", cdr.ROUTE_TLS))
