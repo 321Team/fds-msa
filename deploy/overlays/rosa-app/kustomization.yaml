@@ -12,6 +12,7 @@ resources:
   - ../../base
 components:
   - ../../components/openshift
+  - ../../components/end-page
 labels:
   - pairs:
       project: fds-hybrid
@@ -26,6 +27,10 @@ images:
   - name: fds-engine
     newName: registry-input-pending.invalid/fds/fds-engine
     digest: sha256:8b257adb08b6d381f72b66d3386efea6112a8f072ecfafcbcd463bcd1c3be89d
+  # 엔드페이지 이미지는 아직 빌드 전이다. 0 digest는 자리표시값이라 전달 검사가 거부한다(placeholder_markers).
+  - name: end-page
+    newName: registry-input-pending.invalid/fds/end-page
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 patches:
   # DB(db01) egress는 플랫폼 NetworkPolicy allow-egress-onprem-approved(infra-rosa#7 03)가 이 Pod 라벨로 연다.
   # fds-engine에는 붙이지 않는다(DB 접속정보 없음).
@@ -36,7 +41,7 @@ patches:
       - op: add
         path: /spec/template/metadata/labels/onprem-egress
         value: "true"
-  # 두 Route의 승인 host(delivery/rosa.yaml route_host.approved). components/openshift의 자리표시값은 그대로 둔다.
+  # 세 Route의 승인 host(delivery/rosa.yaml route_host.approved). components/openshift·end-page의 자리표시값은 그대로 둔다.
   - target:
       kind: Route
       name: transaction-api-api
@@ -47,6 +52,13 @@ patches:
   - target:
       kind: Route
       name: transaction-api-readyz
+    patch: |-
+      - op: replace
+        path: /spec/host
+        value: fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com
+  - target:
+      kind: Route
+      name: end-page
     patch: |-
       - op: replace
         path: /spec/host
@@ -82,3 +94,16 @@ patches:
       kind: NetworkPolicy
       metadata:
         name: fds-engine-allow
+  # 엔드페이지의 사전 자원(SA·NetworkPolicy)도 rosa-prereq 몫이다.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: end-page-sa
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: end-page-allow

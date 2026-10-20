@@ -1,0 +1,21 @@
+# 앱 Route와 같은 host의 /end 경로. 경로 없는(catch-all) Route는 여전히 만들지 않는다.
+# host는 자리표시값이다. 실제 overlay가 승인 host로 바꾼다(세 Route는 같은 host).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: end-page
+  labels:
+    app: end-page
+spec:
+  host: fds-api.route-host-input-pending.invalid
+  path: /end
+  to:
+    kind: Service
+    name: end-page
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

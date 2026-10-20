@@ -19,6 +19,7 @@ import check_delivery_render as cdr  # noqa: E402
 DEPLOY = ROOT / "deploy"
 BASE = DEPLOY / "base"
 OCP = DEPLOY / "components" / "openshift"
+END = DEPLOY / "components" / "end-page"
 APP = DEPLOY / "overlays" / "rosa-app"
 PREREQ = DEPLOY / "overlays" / "rosa-prereq"
 CONTRACT = yaml.safe_load((DEPLOY / "delivery" / "rosa.yaml").read_text(encoding="utf-8"))
@@ -41,9 +42,10 @@ def ids(section):
 
 
 def source_objects():
-    """base + components/openshift 리소스(패치 전). 두 렌더와 제외 목록의 합이 이것과 같아야 한다."""
+    """base + components/openshift + components/end-page 리소스(패치 전). 두 렌더와 제외 목록의 합이 이것과 같아야 한다."""
     docs = [d for f in load(BASE / "kustomization.yaml")["resources"] for d in load_all(BASE / f)]
-    docs += [d for f in load(OCP / "kustomization.yaml")["resources"] for d in load_all(OCP / f)]
+    for comp in (OCP, END):
+        docs += [d for f in load(comp / "kustomization.yaml")["resources"] for d in load_all(comp / f)]
     return docs
 
 
@@ -95,7 +97,7 @@ class ContractShapeTests(unittest.TestCase):
         for kust in (app, prereq):
             self.assertEqual(kust["namespace"], CONTRACT["namespace"])
             self.assertEqual(kust["resources"], ["../../base"])
-            self.assertEqual(kust["components"], ["../../components/openshift"])
+            self.assertEqual(kust["components"], ["../../components/openshift", "../../components/end-page"])
             self.assertFalse(kust["labels"][0]["includeSelectors"], "selector를 바꾸면 기존 ReplicaSet과 어긋난다")
         self.assertNotIn("lab-db", (APP / "kustomization.yaml").read_text(encoding="utf-8"))
         self.assertNotIn("images", prereq)
@@ -111,8 +113,8 @@ class ContractShapeTests(unittest.TestCase):
         self.assertTrue(approved == cdr.PENDING or cdr.dns_host(approved), approved)
         self.assertIn("Handoff 2", CONTRACT["app"]["route_host"]["source"])
 
-    def test_app_overlay_sets_both_routes_to_contract_host(self):
-        """2026-10-18: 승인 host 기록 뒤 rosa-app이 두 Route에 같은 값을 넣는다. 자리표시값은 component에만 남는다."""
+    def test_app_overlay_sets_all_routes_to_contract_host(self):
+        """2026-10-18: 승인 host 기록 뒤 rosa-app이 세 Route(앱 2 + 엔드페이지)에 같은 값을 넣는다. 자리표시값은 component에만 남는다."""
         approved = CONTRACT["app"]["route_host"]["approved"]
         self.assertTrue(cdr.dns_host(approved), approved)
         patched = {}
@@ -121,9 +123,58 @@ class ContractShapeTests(unittest.TestCase):
                 ops = yaml.safe_load(p["patch"])
                 self.assertEqual([(o["op"], o["path"]) for o in ops], [("replace", "/spec/host")])
                 patched[p["target"]["name"]] = ops[0]["value"]
-        self.assertEqual(patched, {"transaction-api-api": approved, "transaction-api-readyz": approved})
-        for d in load_all(OCP / "route.yaml"):
+        self.assertEqual(patched, {"transaction-api-api": approved, "transaction-api-readyz": approved,
+                                   "end-page": approved})
+        for d in load_all(OCP / "route.yaml") + load_all(END / "route.yaml"):
             self.assertEqual(d["spec"]["host"], "fds-api.route-host-input-pending.invalid")
+
+    def test_end_page_stays_out_of_portable_base_and_other_overlays(self):
+        """엔드페이지는 ROSA 두 렌더에만 붙는다. P1(p1-onprem)·OCP 렌더 확인·base는 바뀌지 않는다."""
+        for path in [BASE / "kustomization.yaml", *(BASE / f for f in load(BASE / "kustomization.yaml")["resources"])]:
+            self.assertNotIn("end-page", path.read_text(encoding="utf-8"), path)
+        for overlay in ("p1-onprem", "openshift-render-check"):
+            self.assertNotIn("end-page", (DEPLOY / "overlays" / overlay / "kustomization.yaml").read_text(encoding="utf-8"))
+
+    def test_end_page_has_no_db_secret_or_egress(self):
+        docs = {(d["kind"], d["metadata"]["name"]): d for f in load(END / "kustomization.yaml")["resources"]
+                for d in load_all(END / f)}
+        spec = docs[("Deployment", "end-page")]["spec"]["template"]["spec"]
+        self.assertEqual(cdr.secret_names(spec), set())
+        self.assertNotIn("onprem-egress", docs[("Deployment", "end-page")]["spec"]["template"]["metadata"]["labels"])
+        self.assertEqual(docs[("Deployment", "end-page")]["spec"]["template"]["metadata"]["annotations"]
+                         ["fds.321team/tx-demo"], "off", "거래 버튼은 기본 꺼짐")
+        pol = docs[("NetworkPolicy", "end-page-allow")]["spec"]
+        self.assertEqual(pol["policyTypes"], ["Ingress", "Egress"])
+        self.assertNotIn("egress", pol, "나가는 연결 없음(DNS 포함)")
+        self.assertEqual([p["port"] for r in pol["ingress"] for p in r["ports"]], [8080])
+        route = docs[("Route", "end-page")]["spec"]
+        self.assertEqual((route["path"], route["tls"]), ("/end", cdr.ROUTE_TLS))
+
+    def test_topology_display_labels_change_metadata_only(self):
+        """콘솔 Topology 표시용 라벨·주석은 OpenShift component에만 있고 selector·spec을 바꾸지 않는다."""
+        import json
+        for path in [BASE / "kustomization.yaml", *(BASE / f for f in load(BASE / "kustomization.yaml")["resources"])]:
+            self.assertNotIn("app.openshift.io", path.read_text(encoding="utf-8"), path)
+        ops = {p["target"]["name"]: yaml.safe_load(p["patch"]) for p in load(OCP / "kustomization.yaml")["patches"]
+               if p.get("target", {}).get("kind") == "Deployment"}
+        self.assertEqual(set(ops), {"transaction-api", "fds-engine"})
+        for name, patch in ops.items():
+            for op in patch:
+                self.assertEqual(op["op"], "add", (name, op))
+                self.assertTrue(op["path"].startswith(("/metadata/labels/", "/metadata/annotations")),
+                                ("spec·selector를 patch하지 않는다", name, op["path"]))
+            part_of = next(op["value"] for op in patch if op["path"].endswith("part-of"))
+            self.assertEqual(part_of, "fds-hybrid", "lab-db 정리 selector(fds-lab-db)와 분리")
+        ann = next(op["value"] for op in ops["transaction-api"] if op["path"] == "/metadata/annotations")
+        links = json.loads(ann["app.openshift.io/connects-to"])
+        self.assertEqual(links, [{"apiVersion": "apps/v1", "kind": "Deployment", "name": "fds-engine"}],
+                         "실제 호출 방향(API → 엔진 8001)만 그린다")
+        self.assertFalse(any(op["path"] == "/metadata/annotations" for op in ops["fds-engine"]))
+        end = next(d for f in load(END / "kustomization.yaml")["resources"] for d in load_all(END / f)
+                   if d["kind"] == "Deployment")
+        self.assertEqual(end["metadata"]["labels"]["app.kubernetes.io/part-of"], "fds-hybrid")
+        self.assertNotIn("app.openshift.io/connects-to", (end["metadata"].get("annotations") or {}),
+                         "엔드페이지 Pod는 API를 호출하지 않는다(브라우저가 호출)")
 
     def test_contract_matches_base_service_accounts_and_secret_refs(self):
         for d in source_objects():
@@ -144,7 +195,7 @@ class CheckerTests(unittest.TestCase):
     def test_good_app_render_passes(self):
         out = self.run_check(synthetic_app_render())
         self.assertEqual(out["result"], "PASS", out["errors"])
-        self.assertEqual(len(out["objects"]), 6)
+        self.assertEqual(len(out["objects"]), 9)
 
     def test_extra_secret_or_rbac_is_rejected(self):
         for extra in ({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "x", "namespace": "fds-app"}},
@@ -293,6 +344,16 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(self.run_check(docs, allow=True, contract=pending)["result"], "PASS")
         self.assertEqual(self.run_check(docs, allow=True)["result"], "FAIL", "승인 host가 기록되면 자리표시 host는 불일치")
 
+    def test_zero_digest_placeholder_blocks_delivery_unless_ci_flag(self):
+        """빌드 전 이미지(0 digest)는 형식상 digest여도 자리표시값으로 막는다."""
+        docs = synthetic_app_render()
+        for c in self.deployment(docs, "end-page")["spec"]["template"]["spec"]["containers"]:
+            c["image"] = f"registry.example/fds/end-page@sha256:{'0' * 64}"
+        out = self.run_check(docs)
+        self.assertEqual(out["result"], "FAIL")
+        self.assertTrue(any("placeholder" in e for e in out["errors"]), out["errors"])
+        self.assertEqual(self.run_check(docs, allow=True)["result"], "PASS")
+
     def test_cli_exit_codes_and_hash_binding(self):
         import tempfile, json, contextlib, io
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,6 +425,9 @@ class KustomizeRenderTests(unittest.TestCase):
         eng = pols["fds-engine-allow"]["spec"]
         self.assertEqual([p["port"] for r in eng["ingress"] for p in r["ports"]], [8001])
         self.assertEqual(sorted({p["port"] for r in eng["egress"] for p in r["ports"]}), [53, 5353])
+        end = pols["end-page-allow"]["spec"]
+        self.assertEqual([p["port"] for r in end["ingress"] for p in r["ports"]], [8080])
+        self.assertNotIn("egress", end)
 
 
 if __name__ == "__main__":

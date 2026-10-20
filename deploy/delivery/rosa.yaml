@@ -12,15 +12,21 @@ app:
     - {apiVersion: v1, kind: Service, name: fds-engine}
     - {apiVersion: route.openshift.io/v1, kind: Route, name: transaction-api-api}
     - {apiVersion: route.openshift.io/v1, kind: Route, name: transaction-api-readyz}
+    # 엔드페이지(시연용 정적 페이지, components/end-page)
+    - {apiVersion: apps/v1, kind: Deployment, name: end-page}
+    - {apiVersion: v1, kind: Service, name: end-page}
+    - {apiVersion: route.openshift.io/v1, kind: Route, name: end-page}
   service_accounts:
     transaction-api: transaction-api-sa
     fds-engine: fds-engine-sa
+    end-page: end-page-sa
   secret_refs:
     transaction-api: [transaction-api-db-credentials]
     fds-engine: []
+    end-page: []
   onprem_egress_label:
     transaction-api: "true"
-  # 두 Route가 써야 하는 승인 host 1개(infra-rosa#5 v3.2 §1 조건 2). ingress domain 확정 뒤
+  # 세 Route(앱 2 + 엔드페이지 1)가 써야 하는 승인 host 1개(infra-rosa#5 v3.2 §1 조건 2). ingress domain 확정 뒤
   # infra-rosa#4 Handoff 2 기준 값을 PR로 기록한다. PENDING이면 전달 검사는 FAIL(첫 쓰기 전 STOP).
   # 2026-10-18 기록: Handoff 2 = baseline#38 6249632930 2행(Ingress apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com,
   # external), 권욱 수신 검토 6250017909. host = "fds-api." + 그 domain. 인증서 범위는 #38 TLS handoff(NOT VERIFIED).
@@ -35,8 +41,10 @@ prereq:
     - {apiVersion: v1, kind: ServiceAccount, name: fds-engine-sa}
     - {apiVersion: networking.k8s.io/v1, kind: NetworkPolicy, name: transaction-api-allow}
     - {apiVersion: networking.k8s.io/v1, kind: NetworkPolicy, name: fds-engine-allow}
+    - {apiVersion: v1, kind: ServiceAccount, name: end-page-sa}
+    - {apiVersion: networking.k8s.io/v1, kind: NetworkPolicy, name: end-page-allow}
 # base에는 있지만 ROSA 두 렌더 어디에도 넣지 않는 것(플랫폼 fds-platform-default-deny와 중복, infra-rosa#7 6109434697 확정).
 excluded_on_rosa:
   - {apiVersion: networking.k8s.io/v1, kind: NetworkPolicy, name: default-deny-all}
-# 전달 시 남아 있으면 안 되는 자리표시값 표지.
-placeholder_markers: [".invalid", "__"]
+# 전달 시 남아 있으면 안 되는 자리표시값 표지. 0 digest는 빌드 전 이미지 자리표시값이다.
+placeholder_markers: [".invalid", "__", "@sha256:0000000000000000000000000000000000000000000000000000000000000000"]

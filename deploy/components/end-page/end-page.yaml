@@ -1,0 +1,134 @@
+# 엔드페이지(시연용 정적 페이지) — ROSA 렌더(rosa-app·rosa-prereq)에만 들어간다. base·P1 overlay에는 없다.
+# DB·Secret·onprem-egress 없음. 같은 Route host의 /readyz·/api를 브라우저가 부른다(이 Pod는 호출하지 않음).
+# Pod 이름과 거래 버튼 표시 여부는 Downward API 파일로만 노출한다(ConfigMap 없음).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: end-page-sa
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: end-page
+  labels:
+    app: end-page
+    # 콘솔 Topology 표시용. 브라우저가 API를 부르므로 이 Pod에서 나가는 connects-to 화살표는 그리지 않는다.
+    app.kubernetes.io/part-of: fds-hybrid
+    app.openshift.io/runtime: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: end-page
+  template:
+    metadata:
+      labels:
+        app: end-page
+      annotations:
+        # "on"이면 페이지에 거래 버튼을 보인다. 시연 영상 녹화 중에만 켠다(사용자 결정 10/13).
+        # 보안 통제가 아니다(API는 원래 공개). 시험 거래는 #11 결정안대로 보존한다.
+        fds.321team/tx-demo: "off"
+    spec:
+      serviceAccountName: end-page-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: end-page
+          matchLabelKeys:
+            - pod-template-hash
+      containers:
+        - name: end-page
+          image: end-page  # overlay의 images:가 레지스트리@digest로 바꾼다
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /end/healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /end/healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: end-meta
+              mountPath: /etc/end-meta
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: end-meta
+          downwardAPI:
+            items:
+              - path: pod
+                fieldRef:
+                  fieldPath: metadata.name
+              - path: tx-demo
+                fieldRef:
+                  fieldPath: metadata.annotations['fds.321team/tx-demo']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: end-page
+  labels:
+    app: end-page
+spec:
+  type: ClusterIP
+  selector:
+    app: end-page
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# 라우터 → 8080만 받고, 나가는 연결은 없다(egress 규칙 없음 = 전부 차단, DNS도 쓰지 않음).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: end-page-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: end-page
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              policy-group.network.openshift.io/ingress: ""
+      ports:
+        - port: 8080
+          protocol: TCP

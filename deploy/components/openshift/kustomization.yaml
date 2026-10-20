@@ -6,6 +6,33 @@ kind: Component
 resources:
   - route.yaml
 patches:
+  # 콘솔 Topology 표시용(화면 전용, 동작·권한 변화 없음): 앱 묶음(part-of)·런타임 아이콘·연결 화살표.
+  # part-of 값은 fds-hybrid — lab-db 정리 selector(part-of=fds-lab-db)와 겹치지 않는다. selector·spec은 바꾸지 않는다.
+  # connects-to는 실제 호출 방향만 그린다(transaction-api → fds-engine 8001). base Deployment에는 주석이 없다.
+  - target:
+      kind: Deployment
+      name: transaction-api
+    patch: |-
+      - op: add
+        path: /metadata/labels/app.kubernetes.io~1part-of
+        value: fds-hybrid
+      - op: add
+        path: /metadata/labels/app.openshift.io~1runtime
+        value: python
+      - op: add
+        path: /metadata/annotations
+        value:
+          app.openshift.io/connects-to: '[{"apiVersion":"apps/v1","kind":"Deployment","name":"fds-engine"}]'
+  - target:
+      kind: Deployment
+      name: fds-engine
+    patch: |-
+      - op: add
+        path: /metadata/labels/app.kubernetes.io~1part-of
+        value: fds-hybrid
+      - op: add
+        path: /metadata/labels/app.openshift.io~1runtime
+        value: python
   # transaction-api: OpenShift 라우터 → 8000, openshift-dns
   - target:
       kind: NetworkPolicy
