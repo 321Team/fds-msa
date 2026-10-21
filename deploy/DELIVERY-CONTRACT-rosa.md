@@ -131,11 +131,13 @@ python3 tools/check_delivery_render.py --mode prereq prereq.yaml
 
 `--allow-placeholders`는 CI 렌더 확인 전용입니다. 이 경우에만 자리표시값과 승인 host `PENDING`을 허용합니다. 전달 회차에서 쓰지 않습니다.
 
+레지스트리 후보 반영 후 strict PASS는 렌더 구조 검사이며 D22 FINAL·전달 승인·Runtime GO가 아닙니다. 최종 전달은 [321Team/fds-project-baseline#42](https://github.com/321Team/fds-project-baseline/issues/42)의 실제 FINAL 판단과 #46의 승인 입력·원본·receipt 대조를 따릅니다.
+
 ## 8. 아직 비어 있는 입력
 
 | 입력 | 출처 | 현재 |
 |---|---|---|
-| 레지스트리 | #42(D22) | **후보 `10.1.93.54/fds/<앱>`**(Harbor Primary, `rosa-app` 반영). D22 FINAL(실제 TLS·인증·cold-pull) 전에는 전달하지 않음. pull 자격은 앱 SA 연결(infra-rosa#12 (가), 플랫폼) |
+| 레지스트리 | [321Team/fds-project-baseline#42](https://github.com/321Team/fds-project-baseline/issues/42)(D22) | **후보 `10.1.93.54/fds/<앱>`**(Harbor Primary, `rosa-app` 반영). D22 FINAL(실제 TLS·인증·cold-pull) 전에는 전달하지 않음. FINAL 판단 댓글: `<확정 뒤 기입>`. pull 자격은 앱 SA 연결(플랫폼, [하영 채택 infra-rosa#12 6315085580](https://github.com/321Team/infra-rosa/issues/12#issuecomment-6315085580)) |
 | current digest | #43 채택(2026-10-15) | 앱별 고정: transaction-api `338b8a28…`, fds-engine `8b257adb…`(Push 38404449622). 아래 9절 |
 | previous digest | #43 채택(2026-10-15) | **없음(최초 P2 배포)**. 아래 9절 |
 | Route 승인 host | infra-rosa#4 Handoff 2 → `delivery/rosa.yaml` `app.route_host.approved` | **`fds-api.apps.rosa.fds-rosa-hcp.khht.p3.openshiftapps.com`** (2026-10-18 기록). Handoff 2 = [baseline#38 6249632930](https://github.com/321Team/fds-project-baseline/issues/38#issuecomment-6249632930) 2행 Ingress domain, [권욱 수신 검토 6250017909](https://github.com/321Team/fds-project-baseline/issues/38#issuecomment-6250017909). `rosa-app` overlay가 두 Route에 넣고, `components/openshift`는 자리표시값 유지. default 인증서가 이 host를 덮는지는 #38 TLS handoff 전 NOT VERIFIED |
