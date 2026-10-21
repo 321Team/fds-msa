@@ -2,7 +2,8 @@
 # Deployment·Service·Route만 남긴다. ServiceAccount·NetworkPolicy·Secret·RBAC는 플랫폼 사전 자원이다
 # (overlays/rosa-prereq와 infra-rosa#5·#7, Secret은 #43/#12 승인 경로).
 # 계약·허용목록: deploy/delivery/rosa.yaml, 설명: deploy/DELIVERY-CONTRACT-rosa.md.
-# 레지스트리(#42)가 자리표시값(.invalid)인 동안 tools/check_delivery_render.py가 전달을 거부한다.
+# 레지스트리는 #42 D22 Harbor Primary 후보(10.1.93.54/fds)다. D22 FINAL(실제 TLS·인증·cold-pull) 전에는 이 렌더로 전달하지 않는다.
+# 앱 Pod의 Harbor pull 자격은 플랫폼이 앱 SA에 연결한다(infra-rosa#12 6314870347 (가)). 이 렌더에는 imagePullSecrets를 넣지 않는다.
 # Route host는 delivery/rosa.yaml route_host.approved와 같은 값으로 아래 patch가 넣는다(2026-10-18 기록).
 # 이 파일만으로 배포 GO가 아니다. 실제 적용은 #46 회차와 실행 직전 receipt 대조를 따른다.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -21,10 +22,10 @@ images:
   # P2 current digest(#43 채택, 2026-10-15): source affbc69(fds-msa#27) → TBS 38395350748 → Push 38404449622의 앱별 digest.
   # previous는 없음(최초 P2 배포). 레지스트리 이름(#42 D22)만 바뀌고 digest는 바뀌지 않아야 한다. 바뀌면 #46은 첫 쓰기 전 STOP.
   - name: transaction-api
-    newName: registry-input-pending.invalid/fds/transaction-api
+    newName: 10.1.93.54/fds/transaction-api
     digest: sha256:338b8a2871507ce8b42deedc916b26e350577ee6efd18df23d7ff2dd4b17dff0
   - name: fds-engine
-    newName: registry-input-pending.invalid/fds/fds-engine
+    newName: 10.1.93.54/fds/fds-engine
     digest: sha256:8b257adb08b6d381f72b66d3386efea6112a8f072ecfafcbcd463bcd1c3be89d
 patches:
   # DB(db01) egress는 플랫폼 NetworkPolicy allow-egress-onprem-approved(infra-rosa#7 03)가 이 Pod 라벨로 연다.
