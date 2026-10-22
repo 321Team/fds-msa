@@ -2,7 +2,7 @@
 # Deployment·Service·Route만 남긴다. ServiceAccount·NetworkPolicy·Secret·RBAC는 플랫폼 사전 자원이다
 # (overlays/rosa-prereq와 infra-rosa#5·#7, Secret은 #43/#12 승인 경로).
 # 계약·허용목록: deploy/delivery/rosa.yaml, 설명: deploy/DELIVERY-CONTRACT-rosa.md.
-# 레지스트리는 #42 D22 Harbor Primary 후보(10.1.93.54/fds)다. D22 FINAL(실제 TLS·인증·cold-pull) 전에는 이 렌더로 전달하지 않는다.
+# 레지스트리는 #42 D22 FINAL(D22=GO:Harbor, baseline#42 6337537087) Harbor Primary 10.1.93.54/fds다. 전달은 #46 회차만.
 # 앱 Pod의 Harbor pull 자격은 플랫폼이 앱 SA에 연결한다(infra-rosa#12 6314870347 (가)). 이 렌더에는 imagePullSecrets를 넣지 않는다.
 # Route host는 delivery/rosa.yaml route_host.approved와 같은 값으로 아래 patch가 넣는다(2026-10-18 기록).
 # 이 파일만으로 배포 GO가 아니다. 실제 적용은 #46 회차와 실행 직전 receipt 대조를 따른다.

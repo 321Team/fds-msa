@@ -343,7 +343,7 @@ class KustomizeRenderTests(unittest.TestCase):
         text = self.render(APP)
         out = cdr.check(text, "app", CONTRACT, allow_placeholders=True)
         self.assertEqual(out["result"], "PASS", out["errors"])
-        # 레지스트리 후보(#42 D22 Harbor)가 들어간 뒤에는 자리표시값 없이 통과해야 한다. FINAL 전 전달 금지는 병합 시점으로 통제한다.
+        # 레지스트리(#42 D22 FINAL Harbor)가 들어간 뒤에는 자리표시값 없이 통과해야 한다.
         strict = cdr.check(text, "app", CONTRACT)
         self.assertEqual(strict["result"], "PASS", strict["errors"])
         self.assertEqual(strict["placeholders"], [])
